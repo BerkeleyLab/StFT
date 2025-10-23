@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange
 from model_utils import TransformerLayer, get_2d_sincos_pos_embed
 
 
@@ -34,19 +35,19 @@ class StFTBlcok(nn.Module):
         self.pos_embed = nn.Parameter(
             torch.randn(1, num_patches, dim), requires_grad=False
         )
-        self.pos_embed_f = nn.Parameter(
+        self.pos_embed_fno = nn.Parameter(
             torch.randn(1, num_patches, dim), requires_grad=False
         )
         pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], grid_size)
-        pos_embed_f = get_2d_sincos_pos_embed(self.pos_embed_f.shape[-1], grid_size)
+        pos_embed_fno = get_2d_sincos_pos_embed(self.pos_embed_fno.shape[-1], grid_size)
         self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
-        self.pos_embed_f.data.copy_(
-            torch.from_numpy(pos_embed_f).float().unsqueeze(0)
+        self.pos_embed_fno.data.copy_(
+            torch.from_numpy(pos_embed_fno).float().unsqueeze(0)
         )
         self.encoder_layers = nn.ModuleList(
             [TransformerLayer(dim, num_heads, mlp_dim, act) for _ in range(depth)]
         )
-        self.encoder_layers_f = nn.ModuleList(
+        self.encoder_layers_fno = nn.ModuleList(
             [TransformerLayer(dim, num_heads, mlp_dim, act) for _ in range(depth)]
         )
         self.head = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, out_dim))
@@ -63,26 +64,34 @@ class StFTBlcok(nn.Module):
         n, l, _, ph, pw = x.shape
         x_or = x[:, :, : self.cond_time * self.freq_in_channels]
         x_added = x[:, :, (self.cond_time * self.freq_in_channels) :]
-	x_or = x_or.permute(0, 1, 3, 4, 2).view(n, l, ph, pw, self.cond_time, self.freq_in_channels)
+        x_or = rearrange(
+            x_or,
+            "n l (t v) ph pw -> n l ph pw t v",
+            t=self.cond_time,
+            v=self.freq_in_channels,
+        )
         grid_dup = x_or[:, :, :, :, :1, -2:].repeat(1, 1, 1, 1, self.layer_indx, 1)
-
-	x_added = x_added.permute(0, 1, 3, 4, 2).view(n, l, ph, pw, self.layer_indx, self.freq_in_channels - 2)
+        x_added = rearrange(
+            x_added,
+            "n l (t v) ph pw -> n l ph pw t v",
+            t=self.layer_indx,
+            v=self.freq_in_channels - 2,
+        )
         x_added = torch.cat((x_added, grid_dup), axis=-1)
         x = torch.cat((x_or, x_added), axis=-2)
         x = self.p(x)
-	v, t = x.shape[-1], x.shape[-2]
-	x = x.permute(0, 1, 5, 4, 2, 3).view(n * l, v, t, ph, pw)
+        x = rearrange(x, "n l ph pw t v -> (n l) v t ph pw")
         x_ft = torch.fft.rfftn(x, dim=[2, 3, 4])[
             :, :, :, : self.modes[0], : self.modes[1]
         ]
         x_ft_real = (x_ft.real).flatten(1)
         x_ft_imag = (x_ft.imag).flatten(1)
-	x_ft_real = x_ft_real.view(n, l, -1)
-	x_ft_imag = x_ft_imag.view(n, l, -1)
+        x_ft_real = rearrange(x_ft_real, "(n l) D -> n l D", n=n, l=l)
+        x_ft_imag = rearrange(x_ft_imag, "(n l) D -> n l D", n=n, l=l)
         x_ft_real_imag = torch.cat((x_ft_real, x_ft_imag), axis=-1)
         x = self.linear(x_ft_real_imag)
-        x = x + self.pos_embed_f
-        for layer in self.encoder_layers_f:
+        x = x + self.pos_embed_fno
+        for layer in self.encoder_layers_fno:
             x = layer(x)
         x_real, x_imag = self.q(x).split(
             self.modes[0] * self.modes[1] * self.lift_channel, dim=-1
@@ -101,10 +110,9 @@ class StFTBlcok(nn.Module):
         )
         out_ft[:, :, :, : self.modes[0], : self.modes[1]] = x_complex
         x = torch.fft.irfftn(out_ft, s=(1, ph, pw))
-	x = x.permute(0, 3, 4, 1, 2).view(n * l, ph, pw, -1)
+        x = rearrange(x, "(n l) v t ph pw -> (n l) ph pw (v t)", n=n, l=l, t=1)
         x = self.down(x)
-	c = x.shape[-1]
-	x_f = x.permute(0, 3, 1, 2).view(n, l, c, ph, pw)
+        x_fno = rearrange(x, "(n l) ph pw c -> n l c ph pw", n=n, l=l)
         x = x_copy
         _, _, _, ph, pw = x.shape
         x = x.flatten(2)
@@ -112,8 +120,10 @@ class StFTBlcok(nn.Module):
         for layer in self.encoder_layers:
             x = layer(x)
         x = self.head(x)
-	x = x.view(n, l, self.out_channel, ph, pw)
-        x = x + x_f
+        x = rearrange(
+            x, "n l (c ph pw) -> n l c ph pw", c=self.out_channel, ph=ph, pw=pw
+        )
+        x = x + x_fno
         return x
 
 
@@ -206,7 +216,7 @@ class StFT(nn.Module):
     def forward(self, x, grid):
         grid_dup = grid[None, :, :, :].repeat(x.shape[0], x.shape[1], 1, 1, 1)
         x = torch.cat((x, grid_dup), axis=2)
-	x = x.view(x.shape[0], x.shape[1] * x.shape[2], x.shape[3], x.shape[4])
+        x = rearrange(x, "B L C H W -> B (L C) H W")
         layer_outputs = []
         patches = x
         restore_params = []
@@ -240,20 +250,26 @@ class StFT(nn.Module):
                     )
 
                     patches = patches.unfold(2, p1, step_h).unfold(3, p2, step_w)
-	            n, c, h, w, ph, pw = x.shape		
-		    patches = patches.permute(0, 2, 3, 1, 4, 5).view(n, h*w, c, ph, pw)
+                    patches = rearrange(patches, "n c h w ph pw -> n (h w) c ph pw")
+
                     processed_patches = self.blocks[depth](patches)
 
-		    patches = processed_patches.permute(0, 2, 1, 3, 4).view(n, c, h, w, ph, pw)
+                    patches = rearrange(
+                        processed_patches, "n (h w) c ph pw -> n c h w ph pw", h=h, w=w
+                    )
+
                     output = F.fold(
-			torch.reshape(patches.permute(0, 1, 4, 5, 2, 3),(n, c * ph * pw, h * w)),
+                        rearrange(patches, "n c h w ph pw -> n (c ph pw) (h w)"),
                         output_size=(H_pad, W_pad),
                         kernel_size=(p1, p2),
                         stride=(step_h, step_w),
                     )
 
                     overlap_count = F.fold(
-			torch.reshape(torch.ones_like(patches).permute(0, 1, 4, 5, 2, 3),(n, c * ph * pw, h * w)),
+                        rearrange(
+                            torch.ones_like(patches),
+                            "n c h w ph pw -> n (c ph pw) (h w)",
+                        ),
                         output_size=(H_pad, W_pad),
                         kernel_size=(p1, p2),
                         stride=(step_h, step_w),
