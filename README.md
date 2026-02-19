@@ -19,7 +19,7 @@ By default, the results will be saved to the ray_results at home directory. To c
   journal={Transactions on Machine Learning Research},
   year={2026},
 }
-
+```
 
 See the [LICENSE file](LICENSE) for copyright and licensing information.
 
