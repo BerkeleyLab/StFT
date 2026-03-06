@@ -14,10 +14,12 @@ By default, the results will be saved to the ray_results at home directory. To c
 ```bibtex
 
 @article{stft2026,
-  title={StFT: Spatio-temporal Fourier Transformer for Long-term Dynamics Prediction},
+  title={St{FT}: Spatio-temporal Fourier Transformer for Long-term Dynamics Prediction},
   author={Long, Da and Zhe, Shandian and Williams, Samuel and Oliker, Leonid and Bai, Zhe},
   journal={Transactions on Machine Learning Research},
+  issn={2835-8856},
   year={2026},
+  url={https://openreview.net/forum?id=o9Cb0ri2oW},
 }
 ```
 
