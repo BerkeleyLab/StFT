@@ -30,7 +30,7 @@ PH, PW = 8, 8
 OUT_CHANNEL = 2
 MODES = (3, 3)
 N, L = 2, 4          # batch size, num patches
-GRID_SIZE = (2, 2)   # must satisfy grid_size[0]*grid_size[1] == L
+GRID_SIZE = (2, 2)   # grid_size[0]*grid_size[1] == L
 LIFT_CHANNEL = 8
 DIM = 16             # must be divisible by NUM_HEADS
 NUM_HEADS = 2
@@ -59,7 +59,6 @@ def make_block(layer_indx: int, seed: int = SEED) -> StFTBlock:
         in_dim=_in_dim(layer_indx),
         out_dim=_out_dim(),
         out_channel=OUT_CHANNEL,
-        num_patches=L,
         modes=MODES,
         lift_channel=LIFT_CHANNEL,
         dim=DIM,
@@ -138,7 +137,7 @@ def test_numerical_regression(layer_indx, gen_ref):
             "Run with --gen-ref to generate it before refactoring."
         )
 
-    ref = torch.load(ref_path)
+    ref = torch.load(ref_path, weights_only=True)
     assert torch.allclose(out, ref, atol=1e-6), (
         f"layer_indx={layer_indx}: output differs from reference. "
         f"Max abs diff: {(out - ref).abs().max().item():.2e}"

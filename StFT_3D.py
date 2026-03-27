@@ -13,7 +13,6 @@ class StFTBlock(nn.Module):
         in_dim,
         out_dim,
         out_channel,
-        num_patches,
         modes,
         lift_channel=32,
         dim=256,
@@ -32,6 +31,7 @@ class StFTBlock(nn.Module):
         self.out_channel = out_channel
         self.lift_channel = lift_channel
         self.token_embed = nn.Linear(in_dim, dim)
+        num_patches = grid_size[0] * grid_size[1]
         self.pos_embed = nn.Parameter(
             torch.randn(1, num_patches, dim), requires_grad=False
         )
@@ -172,7 +172,6 @@ class StFT(nn.Module):
             num_patches_h = (H_pad - p1) // step_h + 1
             num_patches_w = (W_pad - p2) // step_w + 1
 
-            num_patches = num_patches_h * num_patches_w
             if depth == 0:
                 blocks.append(
                     StFTBlock(
@@ -181,7 +180,6 @@ class StFT(nn.Module):
                         p1 * p2 * in_channels,
                         out_channels * p1 * p2,
                         out_channels,
-                        num_patches,
                         cur_modes,
                         lift_channel=lift_channel,
                         dim=dim,
@@ -201,7 +199,6 @@ class StFT(nn.Module):
                         p1 * p2 * (in_channels + out_channels),
                         out_channels * p1 * p2,
                         out_channels,
-                        num_patches,
                         cur_modes,
                         lift_channel=lift_channel,
                         dim=dim,
