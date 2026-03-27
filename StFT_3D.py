@@ -113,6 +113,8 @@ class StFTBlock(nn.Module):
         x = rearrange(x, "(n l) v t ph pw -> (n l) ph pw (v t)", n=n, l=l, t=1)
         x = self.down(x)
         x_fno = rearrange(x, "(n l) ph pw c -> n l c ph pw", n=n, l=l)
+
+        # ViT path  
         x = x_copy
         _, _, _, ph, pw = x.shape
         x = x.flatten(2)
@@ -123,6 +125,7 @@ class StFTBlock(nn.Module):
         x = rearrange(
             x, "n l (c ph pw) -> n l c ph pw", c=self.out_channel, ph=ph, pw=pw
         )
+        # combine paths
         x = x + x_fno
         return x
 
