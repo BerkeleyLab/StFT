@@ -1,4 +1,3 @@
-import random
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -39,14 +38,18 @@ class TemporalDataset(Dataset):
         self.data = data
         self.N, self.T, self.C, self.H, self.W = data.shape
         self.snapshot_length = snapshot_length
+        self.indices = [
+            (n, t)
+            for n in range(self.N)
+            for t in range(self.T - snapshot_length + 1)
+        ]
 
     def __len__(self):
-        return self.N
+        return len(self.indices)
 
     def __getitem__(self, idx):
-        start = random.randint(0, self.T - self.snapshot_length)
-        selected_data = self.data[idx, start : start + self.snapshot_length]
-        return selected_data
+        n, start = self.indices[idx]
+        return self.data[n, start : start + self.snapshot_length]
 
 
 def get_grid(H, W):
