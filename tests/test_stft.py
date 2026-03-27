@@ -194,3 +194,53 @@ def test_batch_independence():
         assert torch.allclose(out_batch[d][1:], out_1[d], atol=1e-6), (
             f"depth={d}: sample 1 output differs when run alone vs in a batch"
         )
+
+
+# ---------------------------------------------------------------------------
+# 6. Non-square patches and asymmetric overlap variants
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("patch_sizes,overlaps,modes", [
+    pytest.param(
+        ((8, 4), (4, 2)), ((1, 1), (1, 1)), ((3, 2), (2, 1)),
+        id="non-square-patches",
+    ),
+    pytest.param(
+        ((8, 8), (4, 4)), ((2, 1), (1, 2)), ((3, 3), (3, 3)),
+        id="asymmetric-overlaps",
+    ),
+    pytest.param(
+        ((8, 4), (4, 2)), ((2, 1), (1, 1)), ((3, 2), (2, 1)),
+        id="non-square-and-asymmetric",
+    ),
+])
+def test_output_shape_variants(patch_sizes, overlaps, modes):
+    torch.manual_seed(SEED)
+    model = StFT(
+        cond_time=COND_TIME,
+        num_vars=NUM_VARS,
+        patch_sizes=patch_sizes,
+        overlaps=overlaps,
+        in_channels=IN_CHANNELS,
+        out_channels=OUT_CHANNELS,
+        modes=modes,
+        img_size=(IMG_H, IMG_W),
+        lift_channel=LIFT_CHANNEL,
+        dim=DIM,
+        vit_depth=VIT_DEPTH,
+        num_heads=NUM_HEADS,
+        mlp_dim=MLP_DIM,
+    ).eval()
+    x, grid = make_inputs()
+    with torch.no_grad():
+        outputs = model(x, grid)
+
+    assert len(outputs) == len(patch_sizes)
+    expected_shape = (B, OUT_CHANNELS, IMG_H, IMG_W)
+    for d, out in enumerate(outputs):
+        assert out.shape == expected_shape, (
+            f"depth={d}: expected shape {expected_shape}, got {out.shape}"
+        )
+        assert torch.isfinite(out).all(), (
+            f"depth={d}: output contains non-finite values"
+        )
