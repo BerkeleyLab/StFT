@@ -1,9 +1,12 @@
 .DS_Store
 __pycache__/
 .ipynb_checkpoints
+*.egg-info/
 *.pt
 *.ckpt
 *.npy
 *.h5
 *.hdf5
 tests/reference_outputs/
+CLAUDE.md
+notes/
