@@ -1,0 +1,212 @@
+import os
+import pickle
+import torch
+import wandb
+from torch.utils.data import DataLoader
+from torch.nn.utils import clip_grad_norm_
+from stft import StFT, LpLoss, get_grid, TemporalDataset
+
+
+class Trainer:
+    def __init__(self, config):
+        self.config = config
+        many_params = config["many_params"]
+        self.patch_sizes = many_params[0]
+        self.overlaps = many_params[1]
+        self.vit_depth = many_params[2]
+        self.modes = many_params[3]
+        self.num_levels = len(self.patch_sizes)
+        self.dataset_path = config["dataset"]
+        self.dim = config["dim"]
+        self.num_heads = config["num_heads"]
+        self.snapshots = config["snapshots"]
+        self.lr = config["lr"]
+        self.max_epochs = config["max_epochs"]
+        self.batchsize = config["batchsize"]
+        self.cond_time = config["cond_time"]
+        self.lift_channel = config["lift_channel"]
+        self.act = config["act"]
+        self.save_path = config["save_path"]
+        self.save_every_n = config["save_every_n"]
+
+    def run(self):
+        os.makedirs(self.save_path, exist_ok=True)
+        self.setup()
+        wandb.init(project="stft", config=self.config)
+        for ep in range(self.max_epochs):
+            self.model.train()
+            train_metrics = self.train_epoch()
+            self.model.eval()
+            if ep % 10 == 0:
+                self.evaluate_and_log(ep, train_metrics)
+            if ep % self.save_every_n == 0:
+                self.save_checkpoint(ep)
+        wandb.finish()
+
+    def setup(self):
+        self.load_data()
+        self.build_model()
+
+    def load_data(self):
+        with open(self.dataset_path, "rb") as file:
+            dataset = pickle.load(file)
+        self.num_in_states = dataset["channels"]
+        self.img_size = dataset["img_size"]
+        train_data = torch.tensor(dataset["train"], dtype=torch.float32, device="cuda")
+        test = torch.tensor(dataset["test"], dtype=torch.float32, device="cuda")
+        val = torch.tensor(dataset["val"], dtype=torch.float32, device="cuda")
+        self.train_mean = train_data.mean(dim=(0, 1, 3, 4), keepdim=True)
+        self.train_std = train_data.std(dim=(0, 1, 3, 4), keepdim=True)
+        train_data = (train_data - self.train_mean) / self.train_std
+        self.test = (test - self.train_mean) / self.train_std
+        self.val = (val - self.train_mean) / self.train_std
+        self.train_loader = DataLoader(
+            TemporalDataset(train_data, snapshot_length=self.snapshots),
+            batch_size=self.batchsize,
+            shuffle=True,
+        )
+
+    def build_model(self):
+        in_channels = (2 + self.num_in_states) * self.cond_time
+        self.grid = get_grid(self.img_size[0], self.img_size[1]).cuda()
+        self.myloss = LpLoss(size_average=False)
+        self.model = StFT(
+            self.cond_time,
+            self.num_in_states + 2,
+            self.patch_sizes,
+            self.overlaps,
+            in_channels,
+            self.num_in_states,
+            self.modes,
+            img_size=self.img_size,
+            lift_channel=self.lift_channel,
+            dim=self.dim,
+            vit_depth=self.vit_depth,
+            num_heads=self.num_heads,
+            mlp_dim=self.dim,
+            act=self.act,
+        ).to("cuda")
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+        self.best_val = torch.tensor(1e10, dtype=torch.float32, device="cuda")
+        self.best_test = torch.tensor(1e10, dtype=torch.float32, device="cuda")
+        self.best_test_under_val = torch.tensor(1e10, dtype=torch.float32, device="cuda")
+
+    def train_epoch(self):
+        train_l2_levels = torch.zeros(self.num_levels, dtype=torch.float32, device="cuda")
+        train_l2 = 0
+        train_num_examples = 0
+        for _, example in enumerate(self.train_loader):
+            B, L, C, H, W = example.shape
+            for i in range(L - self.cond_time):
+                train_num_examples += B * C
+                x = example[:, i : (i + self.cond_time)].cuda()
+                y = example[:, i + self.cond_time].cuda()
+                preds = self.model(x, self.grid)
+                sum_residues = torch.zeros_like(
+                    preds[0].reshape(B * self.num_in_states, -1),
+                    device="cuda",
+                    dtype=torch.float32,
+                )
+                for level in range(self.num_levels):
+                    cur_preds = preds[level]
+                    sum_residues += cur_preds.reshape(B * self.num_in_states, -1)
+                    train_l2_levels[level] += self.myloss(
+                        cur_preds.reshape(B * self.num_in_states, -1),
+                        y.reshape(B * self.num_in_states, -1),
+                    )
+                loss = self.myloss(
+                    sum_residues.reshape(B * self.num_in_states, -1),
+                    y.reshape(B * self.num_in_states, -1),
+                )
+                self.optimizer.zero_grad()
+                loss.backward(retain_graph=False)
+                clip_grad_norm_(self.model.parameters(), max_norm=10.0)
+                self.optimizer.step()
+                train_l2 += self.myloss(
+                    sum_residues.reshape(B * self.num_in_states, -1),
+                    y.reshape(B * self.num_in_states, -1),
+                )
+        return {
+            "train_l2": train_l2 / train_num_examples,
+            "level_losses": train_l2_levels / train_num_examples,
+        }
+
+    def evaluate(self, data):
+        B, L, C, H, W = data.shape
+        num_examples = 0
+        l2 = 0.0
+        x_old = None
+        preds_or = data[:, : self.cond_time]
+        with torch.no_grad():
+            for i in range(L - self.cond_time):
+                num_examples += B * self.num_in_states
+                if i == 0:
+                    x = preds_or
+                else:
+                    x = torch.cat(
+                        (x_old[:, 1:, :, :, :], preds_or[:, None, :, :, :]), axis=1
+                    )
+                x_old = x.detach().clone()
+                y = data[:, i + self.cond_time].cuda()
+                preds = self.model(x, self.grid)
+                sum_residues = torch.zeros_like(
+                    preds[0].reshape(B * self.num_in_states, -1),
+                    device="cuda",
+                    dtype=torch.float32,
+                )
+                for level in range(self.num_levels):
+                    sum_residues += preds[level].reshape(B * self.num_in_states, -1).detach().clone()
+                l2 += self.myloss(
+                    self.unnorm_data(sum_residues, B, C, H, W).reshape(B * self.num_in_states, -1),
+                    self.unnorm_data(y, B, C, H, W).reshape(B * self.num_in_states, -1),
+                )
+                preds_or = sum_residues.reshape(B, C, H, W)
+        return l2 / num_examples
+
+    def evaluate_and_log(self, ep, train_metrics):
+        error_val = self.evaluate(self.val)
+        error_test = self.evaluate(self.test)
+        if error_test < self.best_test:
+            self.best_test = error_test
+        improved_val = error_val < self.best_val
+        if improved_val:
+            self.best_val = error_val
+            self.best_test_under_val = error_test
+        metrics = {
+            "epoch": ep,
+            "train_l2": train_metrics["train_l2"].item(),
+            "best_val": self.best_val.item(),
+            "best_test_under_val": self.best_test_under_val.item(),
+            "best_test": self.best_test.item(),
+            "test_error": error_test.item(),
+            "val_error": error_val.item(),
+        }
+        for level in range(self.num_levels):
+            metrics[f"level_{level}_loss"] = train_metrics["level_losses"][level].item()
+        wandb.log(metrics)
+        if improved_val:
+            self.save_best(metrics)
+
+    def save_best(self, metrics):
+        torch.save(
+            {
+                "model_state": self.model.state_dict(),
+                "optimizer_state": self.optimizer.state_dict(),
+                **metrics,
+            },
+            os.path.join(self.save_path, "best.pt"),
+        )
+
+    def save_checkpoint(self, ep):
+        torch.save(
+            {
+                "model_state": self.model.state_dict(),
+                "optimizer_state": self.optimizer.state_dict(),
+                "epoch": ep,
+            },
+            os.path.join(self.save_path, f"checkpoint_ep{ep:06d}.pt"),
+        )
+
+    def unnorm_data(self, data, B, C, H, W):
+        data_copy = data.detach().clone()
+        return (data_copy.reshape(B, C, H, W)[:, None, :, :, :]) * self.train_std + self.train_mean
