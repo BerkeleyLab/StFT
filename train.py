@@ -2,8 +2,7 @@ import os
 import torch
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
-from StFT_3D import StFT
-from data_utils import LpLoss, get_grid, TemporalDataset
+from stft import StFT, LpLoss, get_grid, TemporalDataset
 import pickle
 import tempfile
 from ray.train import Checkpoint

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from model_utils import TransformerLayer, get_2d_sincos_pos_embed
+from stft.model_utils import TransformerLayer, get_2d_sincos_pos_embed
 
 
 class StFTBlock(nn.Module):
@@ -114,7 +114,7 @@ class StFTBlock(nn.Module):
         x = self.down(x)
         x_fno = rearrange(x, "(n l) ph pw c -> n l c ph pw", n=n, l=l)
 
-        # ViT path  
+        # ViT path
         x = x_copy
         _, _, _, ph, pw = x.shape
         x = x.flatten(2)

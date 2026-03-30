@@ -9,14 +9,11 @@ Then after refactoring, run normally to verify behavior is unchanged:
 """
 
 import os
-import sys
 
 import pytest
 import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from StFT_3D import StFTBlock  # noqa: E402
+from stft import StFTBlock
 
 REF_DIR = os.path.join(os.path.dirname(__file__), "reference_outputs")
 
