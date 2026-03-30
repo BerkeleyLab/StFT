@@ -1,13 +1,10 @@
 import os
 import torch
+import wandb
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
 from stft import StFT, LpLoss, get_grid, TemporalDataset
 import pickle
-import tempfile
-from ray.train import Checkpoint
-from ray import train, tune
-from ray.train import RunConfig
 
 
 def train_model(config):
@@ -31,6 +28,10 @@ def train_model(config):
     cond_time = config["cond_time"]
     lift_channel = config["lift_channel"]
     act = config["act"]
+    save_path = config["save_path"]
+    save_every_n = config["save_every_n"]
+    os.makedirs(save_path, exist_ok=True)
+    wandb.init(project="stft", config=config)
     myloss = LpLoss(size_average=False)
     num_levels = len(patch_sizes)
     with open(dataset, "rb") as file:
@@ -193,41 +194,45 @@ def train_model(config):
             error_test = (l2_test / num_examples).clone()
             if error_test < best_test:
                 best_test = error_test
-            if error_val < best_val:
+            improved_val = error_val < best_val
+            if improved_val:
                 best_val = error_val
                 best_test_under_val = error_test
-                with tempfile.TemporaryDirectory() as tempdir:
-                    torch.save(
-                        {"model_state": model.state_dict()},
-                        os.path.join(tempdir, "checkpoint_harrm.pt"),
-                    )
-                    metrics = {
-                        "epoch": ep,
-                        "train_l2": train_l2.item(),
-                        "best_val": best_val.item(),
-                        "best_test_under_val": best_test_under_val.item(),
-                        "best_test": best_test.item(),
-                        "test_error": error_test.item(),
-                        "val_error": error_val.item(),
-                    }
-                    for _ in range(num_levels):
-                        metrics["level_" + str(_) + "_loss"] = train_l2_levels[_].item()
-                    train.report(
-                        metrics=metrics, checkpoint=Checkpoint.from_directory(tempdir)
-                    )
-            else:
-                metrics = {
+
+            metrics = {
+                "epoch": ep,
+                "train_l2": train_l2.item(),
+                "best_val": best_val.item(),
+                "best_test_under_val": best_test_under_val.item(),
+                "best_test": best_test.item(),
+                "test_error": error_test.item(),
+                "val_error": error_val.item(),
+            }
+            for level in range(num_levels):
+                metrics[f"level_{level}_loss"] = train_l2_levels[level].item()
+            wandb.log(metrics)
+
+            if improved_val:
+                torch.save(
+                    {
+                        "model_state": model.state_dict(),
+                        "optimizer_state": optimizer.state_dict(),
+                        **metrics,
+                    },
+                    os.path.join(save_path, "best.pt"),
+                )
+
+        if ep % save_every_n == 0:
+            torch.save(
+                {
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
                     "epoch": ep,
-                    "train_l2": train_l2.item(),
-                    "best_val": best_val.item(),
-                    "best_test_under_val": best_test_under_val.item(),
-                    "best_test": best_test.item(),
-                    "test_error": error_test.item(),
-                    "val_error": error_val.item(),
-                }
-                for _ in range(num_levels):
-                    metrics["level_" + str(_) + "_loss"] = train_l2_levels[_].item()
-                train.report(metrics=metrics)
+                },
+                os.path.join(save_path, f"checkpoint_ep{ep:06d}.pt"),
+            )
+
+    wandb.finish()
 
 
 if __name__ == "__main__":
@@ -248,13 +253,7 @@ if __name__ == "__main__":
         "cond_time": 5,
         "lift_channel": 64,
         "act": "gelu",
+        "save_path": "/path/to/my/results",
+        "save_every_n": 100,
     }
-    # save_path = "/path/to/my/results"
-    trainable_with_cpu_gpu = tune.with_resources(train_model, {"cpu": 16, "gpu": 1})
-    tuner = tune.Tuner(
-        trainable_with_cpu_gpu,
-        param_space=config,
-        run_config=RunConfig(name="train_p"),
-	storage_path = save_path, 
-    )
-    tuner.fit()
+    train_model(config)
