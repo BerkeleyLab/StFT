@@ -32,8 +32,14 @@ class Trainer:
     def run(self):
         os.makedirs(self.save_path, exist_ok=True)
         self.setup()
+        start_epoch = 0
+        checkpoints = sorted(
+            [f for f in os.listdir(self.save_path) if f.startswith("checkpoint_ep") and f.endswith(".pt")]
+        )
+        if checkpoints:
+            start_epoch = self.load_checkpoint(os.path.join(self.save_path, checkpoints[-1])) + 1
         wandb.init(project="stft", config=self.config)
-        for ep in range(self.max_epochs):
+        for ep in range(start_epoch, self.max_epochs):
             self.model.train()
             train_metrics = self.train_epoch()
             self.model.eval()
@@ -206,6 +212,12 @@ class Trainer:
             },
             os.path.join(self.save_path, f"checkpoint_ep{ep:06d}.pt"),
         )
+
+    def load_checkpoint(self, path):
+        checkpoint = torch.load(path, map_location="cuda")
+        self.model.load_state_dict(checkpoint["model_state"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        return checkpoint["epoch"]
 
     def unnorm_data(self, data, B, C, H, W):
         data_copy = data.detach().clone()
