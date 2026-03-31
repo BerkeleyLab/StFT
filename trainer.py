@@ -1,5 +1,5 @@
-import os
 import pickle
+from pathlib import Path
 import time
 import torch
 import wandb
@@ -16,7 +16,6 @@ TODO
 - add checks for consistency between metadata in dictionaries and properties of data tensors,
   e.g., num_channels is the size of the data tensor in the channel dimension
 - clean unnorm_data
-- switch to pathlib
 '''
 
 class Trainer:
@@ -38,7 +37,7 @@ class Trainer:
         self.cond_time = config["cond_time"]
         self.lift_channel = config["lift_channel"]
         self.act = config["act"]
-        self.save_path = config["save_path"]
+        self.save_path = Path(config["save_path"])
         self.save_every_n = config["save_every_n"]
         self.epoch = 0
         self.train_time = 0.0
@@ -49,14 +48,12 @@ class Trainer:
         self.build_model()
     
     def run(self):
-        os.makedirs(self.save_path, exist_ok=True)
+        self.save_path.mkdir(parents=True, exist_ok=True)
         self.setup()
         start_epoch = 0
-        checkpoints = sorted(
-            [f for f in os.listdir(self.save_path) if f.startswith("checkpoint_ep") and f.endswith(".pt")]
-        )
+        checkpoints = sorted(self.save_path.glob("checkpoint_ep*.pt"))
         if checkpoints:
-            start_epoch = self.load_checkpoint(os.path.join(self.save_path, checkpoints[-1])) + 1
+            start_epoch = self.load_checkpoint(checkpoints[-1]) + 1
         wandb.init(project="stft", config=self.config)
         for ep in range(start_epoch, self.max_epochs):
             self.epoch = ep
@@ -215,9 +212,9 @@ class Trainer:
                 "epoch": self.epoch,
                 "train_time": self.train_time,
         }
-        checkpoint_path = os.path.join(self.save_path, f"checkpoint_ep{self.epoch:06d}.pt")
+        checkpoint_path = self.save_path / f"checkpoint_ep{self.epoch:06d}.pt"
         if is_best:
-            checkpoint_path = os.path.join(self.save_path, "best.pt")
+            checkpoint_path = self.save_path / "best.pt"
         torch.save(checkpoint, checkpoint_path)
 
     def load_checkpoint(self, path):
