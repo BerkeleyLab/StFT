@@ -5,7 +5,7 @@ import torch
 import wandb
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
-from stft import StFT, LpLoss, get_grid, TemporalDataset
+from stft import StFT, get_grid, TemporalDataset
 
 '''
 TODO
@@ -17,6 +17,35 @@ TODO
   e.g., num_channels is the size of the data tensor in the channel dimension
 - clean unnorm_data
 '''
+
+class LpLoss(object):
+    def __init__(self, p=2, size_average=True, reduction=True):
+        super(LpLoss, self).__init__()
+
+        assert p > 0
+
+        self.p = p
+        self.reduction = reduction
+        self.size_average = size_average
+
+    def rel(self, x, y):
+        num_examples = x.size()[0]
+
+        diff_norms = torch.norm(
+            x.reshape(num_examples, -1) - y.reshape(num_examples, -1), self.p, 1
+        )
+        y_norms = torch.norm(y.reshape(num_examples, -1), self.p, 1)
+
+        if self.reduction:
+            if self.size_average:
+                return torch.mean(diff_norms / y_norms)
+            else:
+                return torch.sum(diff_norms / y_norms)
+
+        return diff_norms / y_norms
+
+    def __call__(self, x, y):
+        return self.rel(x, y)
 
 class Trainer:
     def __init__(self, config):
