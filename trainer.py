@@ -1,5 +1,6 @@
 import os
 import pickle
+import time
 import torch
 import wandb
 from torch.utils.data import DataLoader
@@ -14,6 +15,8 @@ TODO
     - incriment self.epoch in train_epoch
 - add checks for consistency between metadata in dictionaries and properties of data tensors,
   e.g., num_channels is the size of the data tensor in the channel dimension
+- clean unnorm_data
+- switch to pathlib
 '''
 
 class Trainer:
@@ -37,9 +40,14 @@ class Trainer:
         self.act = config["act"]
         self.save_path = config["save_path"]
         self.save_every_n = config["save_every_n"]
-        self.epoch = 0 
+        self.epoch = 0
+        self.train_time = 0.0
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    def setup(self):
+        self.load_data()
+        self.build_model()
+    
     def run(self):
         os.makedirs(self.save_path, exist_ok=True)
         self.setup()
@@ -60,10 +68,6 @@ class Trainer:
             if ep % self.save_every_n == 0:
                 self.save_checkpoint()
         wandb.finish()
-
-    def setup(self):
-        self.load_data()
-        self.build_model()
 
     def load_data(self):
         with open(self.dataset_path, "rb") as file:
@@ -110,6 +114,7 @@ class Trainer:
         self.best_test_under_val = torch.tensor(1e10, dtype=torch.float32, device=self.device)
 
     def train_epoch(self):
+        t0 = time.time()
         train_l2_levels = torch.zeros(self.num_levels, dtype=torch.float32, device=self.device)
         train_l2 = 0
         train_num_examples = 0
@@ -141,6 +146,7 @@ class Trainer:
                 clip_grad_norm_(self.model.parameters(), max_norm=10.0)
                 self.optimizer.step()
                 train_l2 += loss.detach()
+        self.train_time += time.time() - t0
         return {
             "train_l2": train_l2 / train_num_examples,
             "level_losses": train_l2_levels / train_num_examples,
@@ -207,6 +213,7 @@ class Trainer:
                 "model_state": self.model.state_dict(),
                 "optimizer_state": self.optimizer.state_dict(),
                 "epoch": self.epoch,
+                "train_time": self.train_time,
         }
         checkpoint_path = os.path.join(self.save_path, f"checkpoint_ep{self.epoch:06d}.pt")
         if is_best:
@@ -217,6 +224,7 @@ class Trainer:
         checkpoint = torch.load(path, map_location=self.device)
         self.model.load_state_dict(checkpoint["model_state"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        self.train_time = checkpoint["train_time"]
         return checkpoint["epoch"]
 
     def unnorm_data(self, data, B, C, H, W):
