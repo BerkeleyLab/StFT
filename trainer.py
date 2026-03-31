@@ -6,6 +6,15 @@ from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
 from stft import StFT, LpLoss, get_grid, TemporalDataset
 
+'''
+TODO
+- move appropriate functionality from run() to setup()
+- remove start_epoch and use only self.epoch
+    - set self.epoch in setup
+    - incriment self.epoch in train_epoch
+- add checks for consistency between metadata in dictionaries and properties of data tensors,
+  e.g., num_channels is the size of the data tensor in the channel dimension
+'''
 
 class Trainer:
     def __init__(self, config):
@@ -28,6 +37,8 @@ class Trainer:
         self.act = config["act"]
         self.save_path = config["save_path"]
         self.save_every_n = config["save_every_n"]
+        self.epoch = 0 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def run(self):
         os.makedirs(self.save_path, exist_ok=True)
@@ -40,13 +51,14 @@ class Trainer:
             start_epoch = self.load_checkpoint(os.path.join(self.save_path, checkpoints[-1])) + 1
         wandb.init(project="stft", config=self.config)
         for ep in range(start_epoch, self.max_epochs):
+            self.epoch = ep
             self.model.train()
             train_metrics = self.train_epoch()
             self.model.eval()
             if ep % 10 == 0:
-                self.evaluate_and_log(ep, train_metrics)
+                self.evaluate_and_log(train_metrics)
             if ep % self.save_every_n == 0:
-                self.save_checkpoint(ep)
+                self.save_checkpoint()
         wandb.finish()
 
     def setup(self):
@@ -58,9 +70,9 @@ class Trainer:
             dataset = pickle.load(file)
         self.num_in_states = dataset["channels"]
         self.img_size = dataset["img_size"]
-        train_data = torch.tensor(dataset["train"], dtype=torch.float32, device="cuda")
-        test = torch.tensor(dataset["test"], dtype=torch.float32, device="cuda")
-        val = torch.tensor(dataset["val"], dtype=torch.float32, device="cuda")
+        train_data = torch.tensor(dataset["train"], dtype=torch.float32, device=self.device)
+        test = torch.tensor(dataset["test"], dtype=torch.float32, device=self.device)
+        val = torch.tensor(dataset["val"], dtype=torch.float32, device=self.device)
         self.train_mean = train_data.mean(dim=(0, 1, 3, 4), keepdim=True)
         self.train_std = train_data.std(dim=(0, 1, 3, 4), keepdim=True)
         train_data = (train_data - self.train_mean) / self.train_std
@@ -74,7 +86,7 @@ class Trainer:
 
     def build_model(self):
         in_channels = (2 + self.num_in_states) * self.cond_time
-        self.grid = get_grid(self.img_size[0], self.img_size[1]).cuda()
+        self.grid = get_grid(self.img_size[0], self.img_size[1]).to(self.device)
         self.myloss = LpLoss(size_average=False)
         self.model = StFT(
             self.cond_time,
@@ -91,26 +103,26 @@ class Trainer:
             num_heads=self.num_heads,
             mlp_dim=self.dim,
             act=self.act,
-        ).to("cuda")
+        ).to(self.device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
-        self.best_val = torch.tensor(1e10, dtype=torch.float32, device="cuda")
-        self.best_test = torch.tensor(1e10, dtype=torch.float32, device="cuda")
-        self.best_test_under_val = torch.tensor(1e10, dtype=torch.float32, device="cuda")
+        self.best_val = torch.tensor(1e10, dtype=torch.float32, device=self.device)
+        self.best_test = torch.tensor(1e10, dtype=torch.float32, device=self.device)
+        self.best_test_under_val = torch.tensor(1e10, dtype=torch.float32, device=self.device)
 
     def train_epoch(self):
-        train_l2_levels = torch.zeros(self.num_levels, dtype=torch.float32, device="cuda")
+        train_l2_levels = torch.zeros(self.num_levels, dtype=torch.float32, device=self.device)
         train_l2 = 0
         train_num_examples = 0
         for _, example in enumerate(self.train_loader):
             B, L, C, H, W = example.shape
             for i in range(L - self.cond_time):
                 train_num_examples += B * C
-                x = example[:, i : (i + self.cond_time)].cuda()
-                y = example[:, i + self.cond_time].cuda()
+                x = example[:, i : (i + self.cond_time)].to(self.device)
+                y = example[:, i + self.cond_time].to(self.device)
                 preds = self.model(x, self.grid)
                 sum_residues = torch.zeros_like(
                     preds[0].reshape(B * self.num_in_states, -1),
-                    device="cuda",
+                    device=self.device,
                     dtype=torch.float32,
                 )
                 for level in range(self.num_levels):
@@ -128,10 +140,7 @@ class Trainer:
                 loss.backward(retain_graph=False)
                 clip_grad_norm_(self.model.parameters(), max_norm=10.0)
                 self.optimizer.step()
-                train_l2 += self.myloss(
-                    sum_residues.reshape(B * self.num_in_states, -1),
-                    y.reshape(B * self.num_in_states, -1),
-                )
+                train_l2 += loss.detach()
         return {
             "train_l2": train_l2 / train_num_examples,
             "level_losses": train_l2_levels / train_num_examples,
@@ -153,11 +162,11 @@ class Trainer:
                         (x_old[:, 1:, :, :, :], preds_or[:, None, :, :, :]), axis=1
                     )
                 x_old = x.detach().clone()
-                y = data[:, i + self.cond_time].cuda()
+                y = data[:, i + self.cond_time].to(self.device)
                 preds = self.model(x, self.grid)
                 sum_residues = torch.zeros_like(
                     preds[0].reshape(B * self.num_in_states, -1),
-                    device="cuda",
+                    device=self.device,
                     dtype=torch.float32,
                 )
                 for level in range(self.num_levels):
@@ -169,7 +178,7 @@ class Trainer:
                 preds_or = sum_residues.reshape(B, C, H, W)
         return l2 / num_examples
 
-    def evaluate_and_log(self, ep, train_metrics):
+    def evaluate_and_log(self, train_metrics):
         error_val = self.evaluate(self.val)
         error_test = self.evaluate(self.test)
         if error_test < self.best_test:
@@ -179,7 +188,7 @@ class Trainer:
             self.best_val = error_val
             self.best_test_under_val = error_test
         metrics = {
-            "epoch": ep,
+            "epoch": self.epoch,
             "train_l2": train_metrics["train_l2"].item(),
             "best_val": self.best_val.item(),
             "best_test_under_val": self.best_test_under_val.item(),
@@ -191,30 +200,21 @@ class Trainer:
             metrics[f"level_{level}_loss"] = train_metrics["level_losses"][level].item()
         wandb.log(metrics)
         if improved_val:
-            self.save_best(metrics)
+            self.save_checkpoint(is_best=True)
 
-    def save_best(self, metrics):
-        torch.save(
-            {
+    def save_checkpoint(self, is_best=False):
+        checkpoint = {
                 "model_state": self.model.state_dict(),
                 "optimizer_state": self.optimizer.state_dict(),
-                **metrics,
-            },
-            os.path.join(self.save_path, "best.pt"),
-        )
-
-    def save_checkpoint(self, ep):
-        torch.save(
-            {
-                "model_state": self.model.state_dict(),
-                "optimizer_state": self.optimizer.state_dict(),
-                "epoch": ep,
-            },
-            os.path.join(self.save_path, f"checkpoint_ep{ep:06d}.pt"),
-        )
+                "epoch": self.epoch,
+        }
+        checkpoint_path = os.path.join(self.save_path, f"checkpoint_ep{self.epoch:06d}.pt")
+        if is_best:
+            checkpoint_path = os.path.join(self.save_path, "best.pt")
+        torch.save(checkpoint, checkpoint_path)
 
     def load_checkpoint(self, path):
-        checkpoint = torch.load(path, map_location="cuda")
+        checkpoint = torch.load(path, map_location=self.device)
         self.model.load_state_dict(checkpoint["model_state"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state"])
         return checkpoint["epoch"]
