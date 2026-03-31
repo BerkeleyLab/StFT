@@ -3,7 +3,7 @@ from trainer import Trainer
 
 if __name__ == "__main__":
     config = {
-        "dataset": "/path/to/my/data/plasma.pkl",
+        "dataset": "/path/to/my/data/plasma/",
         "many_params": (
             ((128, 128), (64, 64)),
             ((1, 1), (1, 1)),

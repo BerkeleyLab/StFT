@@ -1,17 +1,11 @@
-import pickle
 from pathlib import Path
 import time
+import numpy as np
 import torch
 import wandb
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
-from stft import StFT, get_grid, TemporalDataset
-
-'''
-TODO
-- add checks for consistency between metadata in dictionaries and properties of data tensors,
-  e.g., num_channels is the size of the data tensor in the channel dimension
-'''
+from stft import StFT, get_grid, TemporalDataset, load_dataset
 
 class LpLoss(object):
     def __init__(self, p=2, size_average=True, reduction=True):
@@ -91,23 +85,24 @@ class Trainer:
         wandb.finish()
 
     def load_data(self):
-        with open(self.dataset_path, "rb") as file:
-            dataset = pickle.load(file)
-        self.num_in_states = dataset["channels"]
-        self.img_size = dataset["img_size"]
-        train_data = torch.tensor(dataset["train"], dtype=torch.float32, device=self.device)
-        test = torch.tensor(dataset["test"], dtype=torch.float32, device=self.device)
-        val = torch.tensor(dataset["val"], dtype=torch.float32, device=self.device)
-        self.train_mean = train_data.mean(dim=(0, 1, 3, 4), keepdim=True)
-        self.train_std = train_data.std(dim=(0, 1, 3, 4), keepdim=True)
-        train_data = (train_data - self.train_mean) / self.train_std
-        self.test = (test - self.train_mean) / self.train_std
-        self.val = (val - self.train_mean) / self.train_std
+        dataset = load_dataset(self.dataset_path)
+        self.num_in_states = dataset.channels
+        self.img_size = dataset.img_size
+        train_mean = np.mean(dataset.train, axis=(0, 1, 3, 4), keepdims=True)
+        train_std = np.std(dataset.train, axis=(0, 1, 3, 4), keepdims=True)
+        self.train_mean = torch.tensor(train_mean, dtype=torch.float32, device=self.device)
+        self.train_std = torch.tensor(train_std, dtype=torch.float32, device=self.device)
+        norm_mean = torch.tensor(train_mean, dtype=torch.float32).squeeze(0)
+        norm_std = torch.tensor(train_std, dtype=torch.float32).squeeze(0)
         self.train_loader = DataLoader(
-            TemporalDataset(train_data, snapshot_length=self.snapshots),
+            TemporalDataset(dataset.train, snapshot_length=self.snapshots, mean=norm_mean, std=norm_std),
             batch_size=self.batchsize,
             shuffle=True,
         )
+        test = torch.tensor(np.array(dataset.test), dtype=torch.float32, device=self.device)
+        val = torch.tensor(np.array(dataset.val), dtype=torch.float32, device=self.device)
+        self.test = (test - self.train_mean) / self.train_std
+        self.val = (val - self.train_mean) / self.train_std
 
     def build_model(self):
         in_channels = (2 + self.num_in_states) * self.cond_time
