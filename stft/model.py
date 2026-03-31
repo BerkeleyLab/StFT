@@ -5,15 +5,15 @@ from einops import rearrange
 from stft.model_utils import TransformerLayer, get_2d_sincos_pos_embed
 
 
-class StFTBlock(nn.Module):
+class SpectralPath(nn.Module):
+    """FNO-style path of StFTBlock: lifts to frequency domain, attends, then reconstructs."""
+
     def __init__(
         self,
         cond_time,
         freq_in_channels,
-        in_dim,
-        out_dim,
-        out_channel,
         modes,
+        out_channel,
         lift_channel=32,
         dim=256,
         depth=2,
@@ -23,45 +23,36 @@ class StFTBlock(nn.Module):
         grid_size=(4, 4),
         layer_indx=0,
     ):
-        super(StFTBlock, self).__init__()
-        self.layer_indx = layer_indx
+        super().__init__()
         self.cond_time = cond_time
         self.freq_in_channels = freq_in_channels
         self.modes = modes
         self.out_channel = out_channel
         self.lift_channel = lift_channel
-        self.token_embed = nn.Linear(in_dim, dim)
+        self.layer_indx = layer_indx
+
         num_patches = grid_size[0] * grid_size[1]
         self.pos_embed = nn.Parameter(
             torch.randn(1, num_patches, dim), requires_grad=False
         )
-        self.pos_embed_fno = nn.Parameter(
-            torch.randn(1, num_patches, dim), requires_grad=False
-        )
-        pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], grid_size)
-        pos_embed_fno = get_2d_sincos_pos_embed(self.pos_embed_fno.shape[-1], grid_size)
+        pos_embed = get_2d_sincos_pos_embed(dim, grid_size)
         self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
-        self.pos_embed_fno.data.copy_(
-            torch.from_numpy(pos_embed_fno).float().unsqueeze(0)
+
+        self.p = nn.Linear(freq_in_channels, lift_channel)
+        self.linear = nn.Linear(
+            modes[0] * modes[1] * (cond_time + layer_indx) * lift_channel * 2,
+            dim,
         )
         self.encoder_layers = nn.ModuleList(
             [TransformerLayer(dim, num_heads, mlp_dim, act) for _ in range(depth)]
-        )
-        self.encoder_layers_fno = nn.ModuleList(
-            [TransformerLayer(dim, num_heads, mlp_dim, act) for _ in range(depth)]
-        )
-        self.head = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, out_dim))
-        self.p = nn.Linear(freq_in_channels, lift_channel)
-        self.linear = nn.Linear(
-            modes[0] * modes[1] * (self.cond_time + self.layer_indx) * lift_channel * 2,
-            dim,
         )
         self.q = nn.Linear(dim, modes[0] * modes[1] * 1 * lift_channel * 2)
         self.down = nn.Linear(lift_channel, out_channel)
 
     def forward(self, x):
-        x_copy = x
         n, l, _, ph, pw = x.shape
+
+        # Split into original time steps and added layer outputs
         x_or = x[:, :, : self.cond_time * self.freq_in_channels]
         x_added = x[:, :, (self.cond_time * self.freq_in_channels) :]
         x_or = rearrange(
@@ -79,8 +70,12 @@ class StFTBlock(nn.Module):
         )
         x_added = torch.cat((x_added, grid_dup), axis=-1)
         x = torch.cat((x_or, x_added), axis=-2)
+
+        # Lift channels
         x = self.p(x)
         x = rearrange(x, "n l ph pw t v -> (n l) v t ph pw")
+
+        # 3D rFFT, keep only low-frequency modes
         x_ft = torch.fft.rfftn(x, dim=[2, 3, 4])[
             :, :, :, : self.modes[0], : self.modes[1]
         ]
@@ -89,10 +84,14 @@ class StFTBlock(nn.Module):
         x_ft_real = rearrange(x_ft_real, "(n l) D -> n l D", n=n, l=l)
         x_ft_imag = rearrange(x_ft_imag, "(n l) D -> n l D", n=n, l=l)
         x_ft_real_imag = torch.cat((x_ft_real, x_ft_imag), axis=-1)
+
+        # Transformer in spectral token space
         x = self.linear(x_ft_real_imag)
-        x = x + self.pos_embed_fno
-        for layer in self.encoder_layers_fno:
+        x = x + self.pos_embed
+        for layer in self.encoder_layers:
             x = layer(x)
+
+        # Decode back to spatial domain
         x_real, x_imag = self.q(x).split(
             self.modes[0] * self.modes[1] * self.lift_channel, dim=-1
         )
@@ -112,22 +111,99 @@ class StFTBlock(nn.Module):
         x = torch.fft.irfftn(out_ft, s=(1, ph, pw))
         x = rearrange(x, "(n l) v t ph pw -> (n l) ph pw (v t)", n=n, l=l, t=1)
         x = self.down(x)
-        x_fno = rearrange(x, "(n l) ph pw c -> n l c ph pw", n=n, l=l)
+        return rearrange(x, "(n l) ph pw c -> n l c ph pw", n=n, l=l)
 
-        # ViT path
-        x = x_copy
+
+class SpatialPath(nn.Module):
+    """ViT-style path of StFTBlock: patch tokens attended in spatial domain."""
+
+    def __init__(
+        self,
+        in_dim,
+        out_dim,
+        out_channel,
+        dim=256,
+        depth=2,
+        num_heads=1,
+        mlp_dim=256,
+        act="relu",
+        grid_size=(4, 4),
+    ):
+        super().__init__()
+        self.out_channel = out_channel
+
+        num_patches = grid_size[0] * grid_size[1]
+        self.token_embed = nn.Linear(in_dim, dim)
+        self.pos_embed = nn.Parameter(
+            torch.randn(1, num_patches, dim), requires_grad=False
+        )
+        pos_embed = get_2d_sincos_pos_embed(dim, grid_size)
+        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
+
+        self.encoder_layers = nn.ModuleList(
+            [TransformerLayer(dim, num_heads, mlp_dim, act) for _ in range(depth)]
+        )
+        self.head = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, out_dim))
+
+    def forward(self, x):
         _, _, _, ph, pw = x.shape
         x = x.flatten(2)
         x = self.token_embed(x) + self.pos_embed
         for layer in self.encoder_layers:
             x = layer(x)
         x = self.head(x)
-        x = rearrange(
+        return rearrange(
             x, "n l (c ph pw) -> n l c ph pw", c=self.out_channel, ph=ph, pw=pw
         )
-        # combine paths
-        x = x + x_fno
-        return x
+
+
+class StFTBlock(nn.Module):
+    def __init__(
+        self,
+        cond_time,
+        freq_in_channels,
+        in_dim,
+        out_dim,
+        out_channel,
+        modes,
+        lift_channel=32,
+        dim=256,
+        depth=2,
+        num_heads=1,
+        mlp_dim=256,
+        act="relu",
+        grid_size=(4, 4),
+        layer_indx=0,
+    ):
+        super().__init__()
+        self.spectral = SpectralPath(
+            cond_time=cond_time,
+            freq_in_channels=freq_in_channels,
+            modes=modes,
+            out_channel=out_channel,
+            lift_channel=lift_channel,
+            dim=dim,
+            depth=depth,
+            num_heads=num_heads,
+            mlp_dim=mlp_dim,
+            act=act,
+            grid_size=grid_size,
+            layer_indx=layer_indx,
+        )
+        self.spatial = SpatialPath(
+            in_dim=in_dim,
+            out_dim=out_dim,
+            out_channel=out_channel,
+            dim=dim,
+            depth=depth,
+            num_heads=num_heads,
+            mlp_dim=mlp_dim,
+            act=act,
+            grid_size=grid_size,
+        )
+
+    def forward(self, x):
+        return self.spatial(x) + self.spectral(x)
 
 
 class StFT(nn.Module):
@@ -148,7 +224,7 @@ class StFT(nn.Module):
         mlp_dim=128,
         act="relu",
     ):
-        super(StFT, self).__init__()
+        super().__init__()
 
         blocks = []
         self.cond_time = cond_time
