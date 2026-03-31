@@ -9,13 +9,8 @@ from stft import StFT, get_grid, TemporalDataset
 
 '''
 TODO
-- move appropriate functionality from run() to setup()
-- remove start_epoch and use only self.epoch
-    - set self.epoch in setup
-    - incriment self.epoch in train_epoch
 - add checks for consistency between metadata in dictionaries and properties of data tensors,
   e.g., num_channels is the size of the data tensor in the channel dimension
-- clean unnorm_data
 '''
 
 class LpLoss(object):
@@ -69,29 +64,29 @@ class Trainer:
         self.save_path = Path(config["save_path"])
         self.save_every_n = config["save_every_n"]
         self.epoch = 0
+        self.start_epoch = 0
         self.train_time = 0.0
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def setup(self):
+        self.save_path.mkdir(parents=True, exist_ok=True)
         self.load_data()
         self.build_model()
-    
-    def run(self):
-        self.save_path.mkdir(parents=True, exist_ok=True)
-        self.setup()
-        start_epoch = 0
         checkpoints = sorted(self.save_path.glob("checkpoint_ep*.pt"))
         if checkpoints:
-            start_epoch = self.load_checkpoint(checkpoints[-1]) + 1
+            self.load_checkpoint(checkpoints[-1])
+        
+    def run(self):
+        self.setup()
         wandb.init(project="stft", config=self.config)
-        for ep in range(start_epoch, self.max_epochs):
-            self.epoch = ep
+        for epoch in range(self.start_epoch, self.max_epochs):
+            self.epoch = epoch
             self.model.train()
             train_metrics = self.train_epoch()
             self.model.eval()
-            if ep % 10 == 0:
+            if epoch % 10 == 0:
                 self.evaluate_and_log(train_metrics)
-            if ep % self.save_every_n == 0:
+            if epoch % self.save_every_n == 0:
                 self.save_checkpoint()
         wandb.finish()
 
@@ -251,8 +246,8 @@ class Trainer:
         self.model.load_state_dict(checkpoint["model_state"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state"])
         self.train_time = checkpoint["train_time"]
-        return checkpoint["epoch"]
+        self.epoch = checkpoint["epoch"]
+        self.start_epoch = self.epoch + 1
 
     def unnorm_data(self, data, B, C, H, W):
-        data_copy = data.detach().clone()
-        return (data_copy.reshape(B, C, H, W)[:, None, :, :, :]) * self.train_std + self.train_mean
+        return data.detach().clone().reshape(B, C, H, W).unsqueeze(1) * self.train_std + self.train_mean
