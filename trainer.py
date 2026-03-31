@@ -167,7 +167,7 @@ class Trainer:
                 clip_grad_norm_(self.model.parameters(), max_norm=10.0)
                 self.optimizer.step()
                 train_l2 += loss.detach()
-        self.train_time += time.time() - t0
+        self.train_time += (time.time() - t0) / (60 * 60)
         return {
             "train_l2": train_l2 / train_num_examples,
             "level_losses": train_l2_levels / train_num_examples,
