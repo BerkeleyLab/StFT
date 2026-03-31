@@ -68,8 +68,8 @@ class SpectralPath(nn.Module):
             t=self.layer_indx,
             v=self.freq_in_channels - 2,
         )
-        x_added = torch.cat((x_added, grid_dup), axis=-1)
-        x = torch.cat((x_or, x_added), axis=-2)
+        x_added = torch.cat((x_added, grid_dup), dim=-1)
+        x = torch.cat((x_or, x_added), dim=-2)
 
         # Lift channels
         x = self.p(x)
@@ -83,7 +83,7 @@ class SpectralPath(nn.Module):
         x_ft_imag = (x_ft.imag).flatten(1)
         x_ft_real = rearrange(x_ft_real, "(n l) D -> n l D", n=n, l=l)
         x_ft_imag = rearrange(x_ft_imag, "(n l) D -> n l D", n=n, l=l)
-        x_ft_real_imag = torch.cat((x_ft_real, x_ft_imag), axis=-1)
+        x_ft_real_imag = torch.cat((x_ft_real, x_ft_imag), dim=-1)
 
         # Transformer in spectral token space
         x = self.linear(x_ft_real_imag)
@@ -226,136 +226,102 @@ class StFT(nn.Module):
     ):
         super().__init__()
 
-        blocks = []
         self.cond_time = cond_time
         self.num_vars = num_vars
         self.patch_sizes = patch_sizes
         self.overlaps = overlaps
-        for depth, (p1, p2) in enumerate(patch_sizes):
-            H, W = img_size
-            cur_modes = modes[depth]
-            cur_depth = vit_depth[depth]
-            overlap_h, overlap_w = overlaps[depth]
 
+        blocks = []
+        H, W = img_size
+        for depth, (p1, p2) in enumerate(patch_sizes):
+            overlap_h, overlap_w = overlaps[depth]
             step_h = p1 - overlap_h
             step_w = p2 - overlap_w
-
             pad_h = (step_h - (H - p1) % step_h) % step_h
             pad_w = (step_w - (W - p2) % step_w) % step_w
-            H_pad = H + pad_h
-            W_pad = W + pad_w
+            num_patches_h = (H + pad_h - p1) // step_h + 1
+            num_patches_w = (W + pad_w - p2) // step_w + 1
 
-            num_patches_h = (H_pad - p1) // step_h + 1
-            num_patches_w = (W_pad - p2) // step_w + 1
-
-            if depth == 0:
-                blocks.append(
-                    StFTBlock(
-                        cond_time,
-                        num_vars,
-                        p1 * p2 * in_channels,
-                        out_channels * p1 * p2,
-                        out_channels,
-                        cur_modes,
-                        lift_channel=lift_channel,
-                        dim=dim,
-                        depth=cur_depth,
-                        num_heads=num_heads,
-                        mlp_dim=mlp_dim,
-                        act=act,
-                        grid_size=(num_patches_h, num_patches_w),
-                        layer_indx=depth,
-                    )
+            in_dim = p1 * p2 * (in_channels if depth == 0 else in_channels + out_channels)
+            blocks.append(
+                StFTBlock(
+                    cond_time,
+                    num_vars,
+                    in_dim,
+                    out_channels * p1 * p2,
+                    out_channels,
+                    modes[depth],
+                    lift_channel=lift_channel,
+                    dim=dim,
+                    depth=vit_depth[depth],
+                    num_heads=num_heads,
+                    mlp_dim=mlp_dim,
+                    act=act,
+                    grid_size=(num_patches_h, num_patches_w),
+                    layer_indx=min(depth, 1),
                 )
-            else:
-                blocks.append(
-                    StFTBlock(
-                        cond_time,
-                        num_vars,
-                        p1 * p2 * (in_channels + out_channels),
-                        out_channels * p1 * p2,
-                        out_channels,
-                        cur_modes,
-                        lift_channel=lift_channel,
-                        dim=dim,
-                        depth=cur_depth,
-                        num_heads=num_heads,
-                        mlp_dim=mlp_dim,
-                        act=act,
-                        grid_size=(num_patches_h, num_patches_w),
-                        layer_indx=1,
-                    )
-                )
-
+            )
         self.blocks = nn.ModuleList(blocks)
 
+    @staticmethod
+    def _patchify(x, patch_size, overlap):
+        p1, p2 = patch_size
+        overlap_h, overlap_w = overlap
+        step_h = p1 - overlap_h
+        step_w = p2 - overlap_w
+
+        pad_h = (step_h - (x.shape[2] - p1) % step_h) % step_h
+        pad_w = (step_w - (x.shape[3] - p2) % step_w) % step_w
+        padding = (pad_w // 2, pad_w - pad_w // 2, pad_h // 2, pad_h - pad_h // 2)
+
+        x = F.pad(x, padding, mode="constant", value=0)
+        _, _, H_pad, W_pad = x.shape
+        h = (H_pad - p1) // step_h + 1
+        w = (W_pad - p2) // step_w + 1
+
+        patches = x.unfold(2, p1, step_h).unfold(3, p2, step_w)
+        patches = rearrange(patches, "n c h w ph pw -> n (h w) c ph pw")
+        return patches, (p1, p2, step_h, step_w, padding, H_pad, W_pad, h, w)
+
+    @staticmethod
+    def _unpatchify(patches, restore_params):
+        p1, p2, step_h, step_w, padding, H_pad, W_pad, h, w = restore_params
+
+        patches = rearrange(patches, "n (h w) c ph pw -> n c h w ph pw", h=h, w=w)
+        output = F.fold(
+            rearrange(patches, "n c h w ph pw -> n (c ph pw) (h w)"),
+            output_size=(H_pad, W_pad),
+            kernel_size=(p1, p2),
+            stride=(step_h, step_w),
+        )
+        overlap_count = F.fold(
+            rearrange(
+                torch.ones_like(patches), "n c h w ph pw -> n (c ph pw) (h w)"
+            ),
+            output_size=(H_pad, W_pad),
+            kernel_size=(p1, p2),
+            stride=(step_h, step_w),
+        )
+        output = output / overlap_count
+        output = output[
+            :, :, padding[2] : H_pad - padding[3], padding[0] : W_pad - padding[1]
+        ]
+        return output
+
     def forward(self, x, grid):
-        grid_dup = grid[None, :, :, :].repeat(x.shape[0], x.shape[1], 1, 1, 1)
-        x = torch.cat((x, grid_dup), axis=2)
+        grid_dup = grid.unsqueeze(0).expand(x.shape[0], x.shape[1], -1, -1, -1)
+        x = torch.cat((x, grid_dup), dim=2)
         x = rearrange(x, "B L C H W -> B (L C) H W")
+
         layer_outputs = []
-        patches = x
-        restore_params = []
-        or_patches = x
-        for depth in range(len(self.patch_sizes)):
-            p1, p2 = self.patch_sizes[depth]
-            overlap_h, overlap_w = self.overlaps[depth]
-
-            step_h = p1 - overlap_h
-            step_w = p2 - overlap_w
-
-            pad_h = (step_h - (patches.shape[2] - p1) % step_h) % step_h
-            pad_w = (step_w - (patches.shape[3] - p2) % step_w) % step_w
-            padding = (
-                pad_w // 2,
-                pad_w - pad_w // 2,
-                pad_h // 2,
-                pad_h - pad_h // 2,
+        input_features = x
+        for depth, block in enumerate(self.blocks):
+            patches, restore_params = self._patchify(
+                input_features if depth == 0 else torch.cat((x, layer_outputs[-1].detach().clone()), dim=1),
+                self.patch_sizes[depth],
+                self.overlaps[depth],
             )
-
-            patches = F.pad(patches, padding, mode="constant", value=0)
-            _, _, H_pad, W_pad = patches.shape
-
-            h = (H_pad - p1) // step_h + 1
-            w = (W_pad - p2) // step_w + 1
-
-            restore_params.append(
-                (p1, p2, step_h, step_w, padding, H_pad, W_pad, h, w)
-            )
-
-            patches = patches.unfold(2, p1, step_h).unfold(3, p2, step_w)
-            patches = rearrange(patches, "n c h w ph pw -> n (h w) c ph pw")
-
-            processed_patches = self.blocks[depth](patches)
-
-            patches = rearrange(
-                processed_patches, "n (h w) c ph pw -> n c h w ph pw", h=h, w=w
-            )
-
-            output = F.fold(
-                rearrange(patches, "n c h w ph pw -> n (c ph pw) (h w)"),
-                output_size=(H_pad, W_pad),
-                kernel_size=(p1, p2),
-                stride=(step_h, step_w),
-            )
-
-            overlap_count = F.fold(
-                rearrange(
-                    torch.ones_like(patches),
-                    "n c h w ph pw -> n (c ph pw) (h w)",
-                ),
-                output_size=(H_pad, W_pad),
-                kernel_size=(p1, p2),
-                stride=(step_h, step_w),
-            )
-            output = output / overlap_count
-            output = output[
-                :,
-                :,
-                padding[2] : H_pad - padding[3],
-                padding[0] : W_pad - padding[1],
-            ]
-            layer_outputs.append(output)
-            patches = torch.cat((or_patches, output.detach().clone()), axis=1)
+            output = block(patches)
+            layer_outputs.append(self._unpatchify(output, restore_params))
 
         return layer_outputs
