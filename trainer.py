@@ -99,10 +99,15 @@ class Trainer:
             batch_size=self.batchsize,
             shuffle=True,
         )
-        test = torch.tensor(np.array(dataset.test), dtype=torch.float32, device=self.device)
-        val = torch.tensor(np.array(dataset.val), dtype=torch.float32, device=self.device)
-        self.test = (test - self.train_mean) / self.train_std
-        self.val = (val - self.train_mean) / self.train_std
+        eval_T = dataset.test.shape[1]
+        self.test_loader = DataLoader(
+            TemporalDataset(dataset.test, snapshot_length=eval_T, mean=norm_mean, std=norm_std),
+            batch_size=self.batchsize,
+        )
+        self.val_loader = DataLoader(
+            TemporalDataset(dataset.val, snapshot_length=eval_T, mean=norm_mean, std=norm_std),
+            batch_size=self.batchsize,
+        )
 
     def build_model(self):
         in_channels = (2 + self.num_in_states) * self.cond_time
@@ -168,41 +173,43 @@ class Trainer:
             "level_losses": train_l2_levels / train_num_examples,
         }
 
-    def evaluate(self, data):
-        B, L, C, H, W = data.shape
+    def evaluate(self, loader):
         num_examples = 0
         l2 = 0.0
-        x_old = None
-        preds_or = data[:, : self.cond_time]
         with torch.no_grad():
-            for i in range(L - self.cond_time):
-                num_examples += B * self.num_in_states
-                if i == 0:
-                    x = preds_or
-                else:
-                    x = torch.cat(
-                        (x_old[:, 1:, :, :, :], preds_or[:, None, :, :, :]), axis=1
+            for batch in loader:
+                batch = batch.to(self.device)
+                B, L, C, H, W = batch.shape
+                x_old = None
+                preds_or = batch[:, : self.cond_time]
+                for i in range(L - self.cond_time):
+                    num_examples += B * self.num_in_states
+                    if i == 0:
+                        x = preds_or
+                    else:
+                        x = torch.cat(
+                            (x_old[:, 1:, :, :, :], preds_or[:, None, :, :, :]), axis=1
+                        )
+                    x_old = x.detach().clone()
+                    y = batch[:, i + self.cond_time]
+                    preds = self.model(x, self.grid)
+                    sum_residues = torch.zeros_like(
+                        preds[0].reshape(B * self.num_in_states, -1),
+                        device=self.device,
+                        dtype=torch.float32,
                     )
-                x_old = x.detach().clone()
-                y = data[:, i + self.cond_time].to(self.device)
-                preds = self.model(x, self.grid)
-                sum_residues = torch.zeros_like(
-                    preds[0].reshape(B * self.num_in_states, -1),
-                    device=self.device,
-                    dtype=torch.float32,
-                )
-                for level in range(self.num_levels):
-                    sum_residues += preds[level].reshape(B * self.num_in_states, -1).detach().clone()
-                l2 += self.myloss(
-                    self.unnorm_data(sum_residues, B, C, H, W).reshape(B * self.num_in_states, -1),
-                    self.unnorm_data(y, B, C, H, W).reshape(B * self.num_in_states, -1),
-                )
-                preds_or = sum_residues.reshape(B, C, H, W)
+                    for level in range(self.num_levels):
+                        sum_residues += preds[level].reshape(B * self.num_in_states, -1).detach().clone()
+                    l2 += self.myloss(
+                        self.unnorm_data(sum_residues, B, C, H, W).reshape(B * self.num_in_states, -1),
+                        self.unnorm_data(y, B, C, H, W).reshape(B * self.num_in_states, -1),
+                    )
+                    preds_or = sum_residues.reshape(B, C, H, W)
         return l2 / num_examples
 
     def evaluate_and_log(self, train_metrics):
-        error_val = self.evaluate(self.val)
-        error_test = self.evaluate(self.test)
+        error_val = self.evaluate(self.val_loader)
+        error_test = self.evaluate(self.test_loader)
         if error_test < self.best_test:
             self.best_test = error_test
         improved_val = error_val < self.best_val
