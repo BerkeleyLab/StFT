@@ -21,6 +21,7 @@ if __name__ == "__main__":
         "act": "gelu",
         "save_path": "/path/to/my/results",
         "save_every_n": 100,
+        "condition_blocks": True
     }
     trainer = Trainer(config)
     trainer.run()

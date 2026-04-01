@@ -57,6 +57,7 @@ class Trainer:
         self.act = config["act"]
         self.save_path = Path(config["save_path"])
         self.save_every_n = config["save_every_n"]
+        self.condition = config["condition_blocks"]
         self.epoch = 0
         self.start_epoch = 0
         self.train_time = 0.0
@@ -128,6 +129,7 @@ class Trainer:
             num_heads=self.num_heads,
             mlp_dim=self.dim,
             act=self.act,
+            condition_blocks=self.condition
         ).to(self.device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
         self.best_val = torch.tensor(1e10, dtype=torch.float32, device=self.device)
