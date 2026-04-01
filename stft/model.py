@@ -223,6 +223,7 @@ class StFT(nn.Module):
         num_heads=1,
         mlp_dim=128,
         act="relu",
+        condition_blocks=True
     ):
         super().__init__()
 
@@ -230,6 +231,7 @@ class StFT(nn.Module):
         self.num_vars = num_vars
         self.patch_sizes = patch_sizes
         self.overlaps = overlaps
+        self.condition = condition_blocks
 
         blocks = []
         H, W = img_size
@@ -314,10 +316,10 @@ class StFT(nn.Module):
         x = rearrange(x, "B L C H W -> B (L C) H W")
 
         layer_outputs = []
-        input_features = x
         for depth, block in enumerate(self.blocks):
+            inputs = torch.cat((x, layer_outputs[-1].detach().clone()), dim=1) if (depth != 0 and self.condition) else x
             patches, restore_params = self._patchify(
-                input_features if depth == 0 else torch.cat((x, layer_outputs[-1].detach().clone()), dim=1),
+                inputs,
                 self.patch_sizes[depth],
                 self.overlaps[depth],
             )
