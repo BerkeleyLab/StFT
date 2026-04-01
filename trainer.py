@@ -225,6 +225,9 @@ class Trainer:
             "test_error": error_test.item(),
             "val_error": error_val.item(),
         }
+        if torch.cuda.is_available():
+            metrics["gpu_memory_allocated_gb"] = torch.cuda.memory_allocated() / 1024**3
+            metrics["gpu_utilization"] = torch.cuda.utilization()
         for level in range(self.num_levels):
             metrics[f"level_{level}_loss"] = train_metrics["level_losses"][level].item()
         wandb.log(metrics)
