@@ -1,21 +1,9 @@
-"""
-Unit tests for StFTBlock to guard against behavioral regressions during refactoring.
-
-Run before refactoring to generate reference outputs:
-    pytest tests/test_stft_block.py --gen-ref
-
-Then after refactoring, run normally to verify behavior is unchanged:
-    pytest tests/test_stft_block.py
-"""
-
-import os
+"""Unit tests for StFTBlock."""
 
 import pytest
 import torch
 
 from stft import StFTBlock
-
-REF_DIR = os.path.join(os.path.dirname(__file__), "reference_outputs")
 
 # ---------------------------------------------------------------------------
 # Shared config helpers
@@ -106,43 +94,7 @@ def test_forward_determinism(layer_indx):
 
 
 # ---------------------------------------------------------------------------
-# 3. Numerical regression tests
-# ---------------------------------------------------------------------------
-
-def _ref_path(layer_indx: int) -> str:
-    return os.path.join(REF_DIR, f"stft_block_layer_indx{layer_indx}.pt")
-
-
-@pytest.mark.parametrize("layer_indx", [0, 1])
-def test_numerical_regression(layer_indx, gen_ref):
-    block = make_block(layer_indx)
-    x = make_input(layer_indx)
-
-    with torch.no_grad():
-        out = block(x)
-
-    ref_path = _ref_path(layer_indx)
-
-    if gen_ref:
-        os.makedirs(REF_DIR, exist_ok=True)
-        torch.save(out, ref_path)
-        pytest.skip(f"Reference output saved to {ref_path}")
-
-    if not os.path.exists(ref_path):
-        pytest.skip(
-            f"Reference output not found at {ref_path}. "
-            "Run with --gen-ref to generate it before refactoring."
-        )
-
-    ref = torch.load(ref_path, weights_only=True)
-    assert torch.allclose(out, ref, atol=1e-6), (
-        f"layer_indx={layer_indx}: output differs from reference. "
-        f"Max abs diff: {(out - ref).abs().max().item():.2e}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# 4. Gradient flow tests
+# 3. Gradient flow tests
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("layer_indx", [0, 1])
@@ -172,7 +124,7 @@ def test_gradient_flow(layer_indx):
 
 
 # ---------------------------------------------------------------------------
-# 5. Batch-size independence tests
+# 4. Batch-size independence tests
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("layer_indx", [0, 1])

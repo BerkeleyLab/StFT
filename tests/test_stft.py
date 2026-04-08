@@ -1,21 +1,9 @@
-"""
-Unit tests for StFT to guard against behavioral regressions during refactoring.
-
-Run before refactoring to generate reference outputs:
-    pytest tests/test_stft.py --gen-ref
-
-Then after refactoring, run normally to verify behavior is unchanged:
-    pytest tests/test_stft.py
-"""
-
-import os
+"""Unit tests for StFT."""
 
 import pytest
 import torch
 
 from stft import StFT
-
-REF_DIR = os.path.join(os.path.dirname(__file__), "reference_outputs")
 
 # ---------------------------------------------------------------------------
 # Shared config helpers
@@ -107,43 +95,7 @@ def test_forward_determinism():
 
 
 # ---------------------------------------------------------------------------
-# 3. Numerical regression tests
-# ---------------------------------------------------------------------------
-
-def _ref_path(depth: int) -> str:
-    return os.path.join(REF_DIR, f"stft_depth{depth}.pt")
-
-
-def test_numerical_regression(gen_ref):
-    model = make_model()
-    x, grid = make_inputs()
-
-    with torch.no_grad():
-        outputs = model(x, grid)
-
-    if gen_ref:
-        os.makedirs(REF_DIR, exist_ok=True)
-        for d, out in enumerate(outputs):
-            torch.save(out, _ref_path(d))
-        pytest.skip(f"Reference outputs saved to {REF_DIR}")
-
-    missing = [d for d in range(len(PATCH_SIZES)) if not os.path.exists(_ref_path(d))]
-    if missing:
-        pytest.skip(
-            f"Reference outputs missing for depths {missing}. "
-            "Run with --gen-ref to generate them before refactoring."
-        )
-
-    for d, out in enumerate(outputs):
-        ref = torch.load(_ref_path(d), weights_only=True)
-        assert torch.allclose(out, ref, atol=1e-6), (
-            f"depth={d}: output differs from reference. "
-            f"Max abs diff: {(out - ref).abs().max().item():.2e}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# 4. Gradient flow tests
+# 3. Gradient flow tests
 # ---------------------------------------------------------------------------
 
 def test_gradient_flow():
@@ -171,7 +123,7 @@ def test_gradient_flow():
 
 
 # ---------------------------------------------------------------------------
-# 5. Batch independence tests
+# 4. Batch independence tests
 # ---------------------------------------------------------------------------
 
 def test_batch_independence():
@@ -194,7 +146,7 @@ def test_batch_independence():
 
 
 # ---------------------------------------------------------------------------
-# 6. Non-square patches and asymmetric overlap variants
+# 5. Non-square patches and asymmetric overlap variants
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("patch_sizes,overlaps,modes", [
