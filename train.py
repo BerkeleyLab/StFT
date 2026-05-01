@@ -1,21 +1,18 @@
 from trainer import Trainer
 
-
 if __name__ == "__main__":
     config = {
         "dataset": "/path/to/my/data/plasma/",
-        "many_params": (
-            ((128, 128), (64, 64)),
-            ((1, 1), (1, 1)),
-            (6, 6),
-            ((8, 8), (8, 8)),
-        ),
+        "patch_sizes": ((128, 128), (64, 64), (32, 32)),
+        "overlaps": ((1, 1), (1, 1)),
+        "vit_depth": (6, 6),
+        "modes": ((8, 8), (8, 8)),
         "dim": 128,
         "num_heads": 1,
         "snapshots": 20,
         "lr": 1e-4,
         "max_epochs": 100000,
-        "batchsize": 20,
+        "batchsize": 16,
         "cond_time": 5,
         "lift_channel": 64,
         "act": "gelu",

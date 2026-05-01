@@ -39,12 +39,17 @@ class LpLoss(object):
 class Trainer:
     def __init__(self, config):
         self.config = config
-        many_params = config["many_params"]
-        self.patch_sizes = many_params[0]
-        self.overlaps = many_params[1]
-        self.vit_depth = many_params[2]
-        self.modes = many_params[3]
+        self.patch_sizes = config["patch_sizes"]
+        self.overlaps = config["overlaps"]
+        self.vit_depth = config["vit_depth"]
+        self.modes = config["modes"]
         self.num_levels = len(self.patch_sizes)
+        if not (self.num_levels == len(self.overlaps) == len(self.vit_depth) == len(self.modes)):
+            raise ValueError(
+                f"patch_sizes, overlaps, vit_depth, and modes must all have the same number of levels, "
+                f"got lengths: patch_sizes={self.num_levels}, overlaps={len(self.overlaps)}, "
+                f"vit_depth={len(self.vit_depth)}, modes={len(self.modes)}"
+            )
         self.dataset_path = config["dataset"]
         self.dim = config["dim"]
         self.num_heads = config["num_heads"]
