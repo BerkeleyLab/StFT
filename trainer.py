@@ -164,7 +164,7 @@ class Trainer:
                     train_l2_levels[level] += self.myloss(
                         cur_preds.reshape(B * self.num_in_states, -1),
                         y.reshape(B * self.num_in_states, -1),
-                    )
+                    ).detach()
                 loss = self.myloss(
                     sum_residues.reshape(B * self.num_in_states, -1),
                     y.reshape(B * self.num_in_states, -1),
