@@ -81,10 +81,11 @@ class Trainer:
         for epoch in range(self.start_epoch, self.max_epochs):
             self.epoch = epoch
             self.model.train()
-            train_metrics = self.train_epoch()
+            model_metrics, comp_metrics = self.train_epoch()
+            wandb.log({"epoch": epoch, **comp_metrics})
             self.model.eval()
             if epoch % 10 == 0:
-                self.evaluate_and_log(train_metrics)
+                self.evaluate_and_log(model_metrics)
             if epoch % self.save_every_n == 0:
                 self.save_checkpoint()
         wandb.finish()
@@ -140,6 +141,8 @@ class Trainer:
         self.best_test_under_val = torch.tensor(1e10, dtype=torch.float32, device=self.device)
 
     def train_epoch(self):
+        if self.device != "cpu":
+            torch.cuda.reset_peak_memory_stats(self.device)
         t0 = time.time()
         train_l2_levels = torch.zeros(self.num_levels, dtype=torch.float32, device=self.device)
         train_l2 = 0
@@ -170,11 +173,17 @@ class Trainer:
             clip_grad_norm_(self.model.parameters(), max_norm=10.0)
             self.optimizer.step()
             train_l2 += loss.detach()
-        self.train_time += (time.time() - t0) / (60 * 60)
-        return {
+        elapsed = time.time() - t0
+        self.train_time += elapsed / (60 * 60)
+        model_metrics = {
             "train_l2": train_l2 / train_num_examples,
             "level_losses": train_l2_levels / train_num_examples,
         }
+        comp_metrics = {"throughput_samples_per_sec": train_num_examples / elapsed}
+        if torch.cuda.is_available():
+            comp_metrics["peak_gpu_memory_gb"] = torch.cuda.max_memory_allocated(self.device) / 1024**3
+            comp_metrics["reserved_gpu_memory_gb"] = torch.cuda.max_memory_reserved(self.device) / 1024**3
+        return model_metrics, comp_metrics
 
     def evaluate(self, loader):
         num_examples = 0
@@ -210,7 +219,7 @@ class Trainer:
                     preds_or = sum_residues.reshape(B, C, H, W)
         return l2 / num_examples
 
-    def evaluate_and_log(self, train_metrics):
+    def evaluate_and_log(self, model_metrics):
         error_val = self.evaluate(self.val_loader)
         error_test = self.evaluate(self.test_loader)
         if error_test < self.best_test:
@@ -221,18 +230,15 @@ class Trainer:
             self.best_test_under_val = error_test
         metrics = {
             "epoch": self.epoch,
-            "train_l2": train_metrics["train_l2"].item(),
+            "train_l2": model_metrics["train_l2"].item(),
             "best_val": self.best_val.item(),
             "best_test_under_val": self.best_test_under_val.item(),
             "best_test": self.best_test.item(),
             "test_error": error_test.item(),
             "val_error": error_val.item(),
         }
-        if torch.cuda.is_available():
-            metrics["gpu_memory_allocated_gb"] = torch.cuda.memory_allocated() / 1024**3
-            metrics["gpu_utilization"] = torch.cuda.utilization()
         for level in range(self.num_levels):
-            metrics[f"level_{level}_loss"] = train_metrics["level_losses"][level].item()
+            metrics[f"level_{level}_loss"] = model_metrics["level_losses"][level].item()
         wandb.log(metrics)
         if improved_val:
             self.save_checkpoint(is_best=True)
