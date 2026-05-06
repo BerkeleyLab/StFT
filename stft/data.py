@@ -68,28 +68,44 @@ def load_dataset(dataset_dir, mmap_mode="r"):
     )
 
 
-class TemporalDataset(Dataset):
-    def __init__(self, data, snapshot_length=20, mean=None, std=None):
+class TrainingDataset(Dataset):
+    def __init__(self, data, cond_time, mean=None, std=None):
         self.data = data
-        self.N, self.T, self.C, self.H, self.W = data.shape
-        self.snapshot_length = snapshot_length
+        N, T, C, H, W = data.shape
+        self.cond_time = cond_time
         self.mean = mean
         self.std = std
-        self.indices = [
-            (n, t)
-            for n in range(self.N)
-            for t in range(self.T - snapshot_length + 1)
-        ]
+        self.indices = [(n, t) for n in range(N) for t in range(T - cond_time)]
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
-        n, start = self.indices[idx]
+        n, t = self.indices[idx]
         x = torch.tensor(
-            np.array(self.data[n, start : start + self.snapshot_length]),
-            dtype=torch.float32,
+            np.array(self.data[n, t : t + self.cond_time]), dtype=torch.float32
         )
+        y = torch.tensor(
+            np.array(self.data[n, t + self.cond_time]), dtype=torch.float32
+        )
+        if self.mean is not None:
+            x = (x - self.mean) / self.std
+            y = (y - self.mean) / self.std
+        return x, y
+
+
+class RolloutDataset(Dataset):
+    def __init__(self, data, mean=None, std=None):
+        self.data = data
+        self.N = data.shape[0]
+        self.mean = mean
+        self.std = std
+
+    def __len__(self):
+        return self.N
+
+    def __getitem__(self, idx):
+        x = torch.tensor(np.array(self.data[idx]), dtype=torch.float32)
         if self.mean is not None:
             x = (x - self.mean) / self.std
         return x

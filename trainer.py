@@ -5,7 +5,7 @@ import torch
 import wandb
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
-from stft import StFT, get_grid, TemporalDataset, load_dataset
+from stft import StFT, get_grid, TrainingDataset, RolloutDataset, load_dataset
 
 class LpLoss(object):
     def __init__(self, p=2, size_average=True, reduction=True):
@@ -53,7 +53,6 @@ class Trainer:
         self.dataset_path = config["dataset"]
         self.dim = config["dim"]
         self.num_heads = config["num_heads"]
-        self.snapshots = config["snapshots"]
         self.lr = config["lr"]
         self.max_epochs = config["max_epochs"]
         self.batchsize = config["batchsize"]
@@ -98,20 +97,19 @@ class Trainer:
         train_std = np.std(dataset.train, axis=(0, 1, 3, 4), keepdims=True)
         self.train_mean = torch.tensor(train_mean, dtype=torch.float32, device=self.device)
         self.train_std = torch.tensor(train_std, dtype=torch.float32, device=self.device)
-        norm_mean = torch.tensor(train_mean, dtype=torch.float32).squeeze(0)
-        norm_std = torch.tensor(train_std, dtype=torch.float32).squeeze(0)
+        norm_mean = torch.tensor(train_mean, dtype=torch.float32).squeeze(0).squeeze(0)
+        norm_std = torch.tensor(train_std, dtype=torch.float32).squeeze(0).squeeze(0)
         self.train_loader = DataLoader(
-            TemporalDataset(dataset.train, snapshot_length=self.snapshots, mean=norm_mean, std=norm_std),
+            TrainingDataset(dataset.train, cond_time=self.cond_time, mean=norm_mean, std=norm_std),
             batch_size=self.batchsize,
             shuffle=True,
         )
-        eval_T = dataset.test.shape[1]
         self.test_loader = DataLoader(
-            TemporalDataset(dataset.test, snapshot_length=eval_T, mean=norm_mean, std=norm_std),
+            RolloutDataset(dataset.test, mean=norm_mean, std=norm_std),
             batch_size=self.batchsize,
         )
         self.val_loader = DataLoader(
-            TemporalDataset(dataset.val, snapshot_length=eval_T, mean=norm_mean, std=norm_std),
+            RolloutDataset(dataset.val, mean=norm_mean, std=norm_std),
             batch_size=self.batchsize,
         )
 
@@ -146,34 +144,32 @@ class Trainer:
         train_l2_levels = torch.zeros(self.num_levels, dtype=torch.float32, device=self.device)
         train_l2 = 0
         train_num_examples = 0
-        for _, example in enumerate(self.train_loader):
-            B, L, C, H, W = example.shape
-            for i in range(L - self.cond_time):
-                train_num_examples += B * C
-                x = example[:, i : (i + self.cond_time)].to(self.device)
-                y = example[:, i + self.cond_time].to(self.device)
-                preds = self.model(x, self.grid)
-                sum_residues = torch.zeros_like(
-                    preds[0].reshape(B * self.num_in_states, -1),
-                    device=self.device,
-                    dtype=torch.float32,
-                )
-                for level in range(self.num_levels):
-                    cur_preds = preds[level]
-                    sum_residues += cur_preds.reshape(B * self.num_in_states, -1)
-                    train_l2_levels[level] += self.myloss(
-                        cur_preds.reshape(B * self.num_in_states, -1),
-                        y.reshape(B * self.num_in_states, -1),
-                    ).detach()
-                loss = self.myloss(
-                    sum_residues.reshape(B * self.num_in_states, -1),
+        for x, y in self.train_loader:
+            x = x.to(self.device)
+            y = y.to(self.device)
+            B = x.shape[0]
+            train_num_examples += B * self.num_in_states
+            preds = self.model(x, self.grid)
+            sum_residues = torch.zeros_like(
+                preds[0].reshape(B * self.num_in_states, -1),
+                dtype=torch.float32,
+            )
+            for level in range(self.num_levels):
+                cur_preds = preds[level]
+                sum_residues += cur_preds.reshape(B * self.num_in_states, -1)
+                train_l2_levels[level] += self.myloss(
+                    cur_preds.reshape(B * self.num_in_states, -1),
                     y.reshape(B * self.num_in_states, -1),
-                )
-                self.optimizer.zero_grad()
-                loss.backward(retain_graph=False)
-                clip_grad_norm_(self.model.parameters(), max_norm=10.0)
-                self.optimizer.step()
-                train_l2 += loss.detach()
+                ).detach()
+            loss = self.myloss(
+                sum_residues,
+                y.reshape(B * self.num_in_states, -1),
+            )
+            self.optimizer.zero_grad()
+            loss.backward()
+            clip_grad_norm_(self.model.parameters(), max_norm=10.0)
+            self.optimizer.step()
+            train_l2 += loss.detach()
         self.train_time += (time.time() - t0) / (60 * 60)
         return {
             "train_l2": train_l2 / train_num_examples,

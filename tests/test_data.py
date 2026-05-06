@@ -11,14 +11,14 @@ import torch
 from torch.utils.data import DataLoader
 
 from stft import StFT
-from stft.data import Dataset5D, TemporalDataset, get_grid, load_dataset
+from stft.data import Dataset5D, TrainingDataset, RolloutDataset, get_grid, load_dataset
 
 # ---------------------------------------------------------------------------
 # Shared constants
 # ---------------------------------------------------------------------------
 
 N, T, C, H, W = 3, 10, 1, 8, 8
-SNAPSHOT_LENGTH = 4
+COND_TIME = 3
 SEED = 42
 
 
@@ -110,68 +110,116 @@ def test_load_dataset_metadata_img_size_mismatch_raises(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 2. TemporalDataset
+# 2. TrainingDataset
 # ---------------------------------------------------------------------------
 
 
-def test_temporal_dataset_len():
+def test_training_dataset_len():
     data = make_array()
-    ds = TemporalDataset(data, snapshot_length=SNAPSHOT_LENGTH)
-    assert len(ds) == N * (T - SNAPSHOT_LENGTH + 1)
+    ds = TrainingDataset(data, cond_time=COND_TIME)
+    assert len(ds) == N * (T - COND_TIME)
 
 
-def test_temporal_dataset_item_shape():
+def test_training_dataset_item_shapes():
     data = make_array()
-    ds = TemporalDataset(data, snapshot_length=SNAPSHOT_LENGTH)
-    assert ds[0].shape == (SNAPSHOT_LENGTH, C, H, W)
+    ds = TrainingDataset(data, cond_time=COND_TIME)
+    x, y = ds[0]
+    assert x.shape == (COND_TIME, C, H, W)
+    assert y.shape == (C, H, W)
 
 
-def test_temporal_dataset_item_dtype():
+def test_training_dataset_item_dtype():
     data = make_array()
-    ds = TemporalDataset(data, snapshot_length=SNAPSHOT_LENGTH)
-    assert ds[0].dtype == torch.float32
+    ds = TrainingDataset(data, cond_time=COND_TIME)
+    x, y = ds[0]
+    assert x.dtype == torch.float32
+    assert y.dtype == torch.float32
 
 
-def test_temporal_dataset_no_normalization():
+def test_training_dataset_no_normalization():
     data = make_array()
-    ds = TemporalDataset(data, snapshot_length=SNAPSHOT_LENGTH)
+    ds = TrainingDataset(data, cond_time=COND_TIME)
     n, t = ds.indices[0]
-    expected = torch.tensor(
-        data[n, t : t + SNAPSHOT_LENGTH], dtype=torch.float32
-    )
-    assert torch.allclose(ds[0], expected)
+    x, y = ds[0]
+    assert torch.allclose(x, torch.tensor(data[n, t : t + COND_TIME], dtype=torch.float32))
+    assert torch.allclose(y, torch.tensor(data[n, t + COND_TIME], dtype=torch.float32))
 
 
-def test_temporal_dataset_normalization():
+def test_training_dataset_normalization():
     data = make_array()
-    mean = torch.tensor(data.mean(), dtype=torch.float32)
-    std = torch.tensor(data.std(), dtype=torch.float32)
-    ds = TemporalDataset(data, snapshot_length=SNAPSHOT_LENGTH, mean=mean, std=std)
+    mean = torch.full((C, 1, 1), float(data.mean()))
+    std = torch.full((C, 1, 1), float(data.std()))
+    ds = TrainingDataset(data, cond_time=COND_TIME, mean=mean, std=std)
 
     n, t = ds.indices[0]
-    raw = torch.tensor(data[n, t : t + SNAPSHOT_LENGTH], dtype=torch.float32)
-    expected = (raw - mean) / std
-    assert torch.allclose(ds[0], expected, atol=1e-6)
+    raw_x = torch.tensor(data[n, t : t + COND_TIME], dtype=torch.float32)
+    raw_y = torch.tensor(data[n, t + COND_TIME], dtype=torch.float32)
+    x, y = ds[0]
+    assert torch.allclose(x, (raw_x - mean) / std, atol=1e-6)
+    assert torch.allclose(y, (raw_y - mean) / std, atol=1e-6)
 
 
-def test_temporal_dataset_snapshot_equals_T():
+def test_training_dataset_dataloader():
     data = make_array()
-    ds = TemporalDataset(data, snapshot_length=T)
+    ds = TrainingDataset(data, cond_time=COND_TIME)
+    loader = DataLoader(ds, batch_size=2)
+    x_batch, y_batch = next(iter(loader))
+    assert x_batch.shape == (2, COND_TIME, C, H, W)
+    assert y_batch.shape == (2, C, H, W)
+    assert x_batch.dtype == torch.float32
+    assert y_batch.dtype == torch.float32
+
+
+# ---------------------------------------------------------------------------
+# 3. RolloutDataset
+# ---------------------------------------------------------------------------
+
+
+def test_rollout_dataset_len():
+    data = make_array()
+    ds = RolloutDataset(data)
     assert len(ds) == N
+
+
+def test_rollout_dataset_item_shape():
+    data = make_array()
+    ds = RolloutDataset(data)
     assert ds[0].shape == (T, C, H, W)
 
 
-def test_temporal_dataset_dataloader():
+def test_rollout_dataset_item_dtype():
     data = make_array()
-    ds = TemporalDataset(data, snapshot_length=SNAPSHOT_LENGTH)
+    ds = RolloutDataset(data)
+    assert ds[0].dtype == torch.float32
+
+
+def test_rollout_dataset_no_normalization():
+    data = make_array()
+    ds = RolloutDataset(data)
+    assert torch.allclose(ds[0], torch.tensor(data[0], dtype=torch.float32))
+
+
+def test_rollout_dataset_normalization():
+    data = make_array()
+    mean = torch.full((C, 1, 1), float(data.mean()))
+    std = torch.full((C, 1, 1), float(data.std()))
+    ds = RolloutDataset(data, mean=mean, std=std)
+
+    raw = torch.tensor(data[0], dtype=torch.float32)
+    assert torch.allclose(ds[0], (raw - mean) / std, atol=1e-6)
+
+
+def test_rollout_dataset_dataloader():
+    data = make_array()
+    ds = RolloutDataset(data)
     loader = DataLoader(ds, batch_size=2)
     batch = next(iter(loader))
-    assert batch.shape == (2, SNAPSHOT_LENGTH, C, H, W)
+    assert batch.shape == (2, T, C, H, W)
     assert batch.dtype == torch.float32
 
 
 # ---------------------------------------------------------------------------
-# 3. get_grid
+# 4. get_grid
 # ---------------------------------------------------------------------------
 
 
@@ -192,7 +240,7 @@ def test_get_grid_dtype():
 
 
 # ---------------------------------------------------------------------------
-# 4. TemporalDataset → StFT interface
+# 5. TrainingDataset → StFT interface
 # ---------------------------------------------------------------------------
 
 # Match the minimal config from test_stft.py, but use H=W=16 to satisfy patch sizes.
@@ -212,14 +260,12 @@ _NUM_HEADS     = 2
 _MLP_DIM       = 16
 
 
-def test_temporal_dataset_stft_interface():
-    """A DataLoader batch from TemporalDataset feeds into StFT without shape errors."""
+def test_training_dataset_stft_interface():
+    """A DataLoader batch from TrainingDataset feeds into StFT without shape errors."""
     data = make_array(n=4, t=10, c=_NUM_IN_STATES, h=_IMG_H, w=_IMG_W)
-    ds = TemporalDataset(data, snapshot_length=_COND_TIME + 2)
+    ds = TrainingDataset(data, cond_time=_COND_TIME)
     loader = DataLoader(ds, batch_size=2)
-    batch = next(iter(loader))  # (B, snapshot_length, C, H, W)
-
-    x = batch[:, :_COND_TIME]  # (B, cond_time, NUM_IN_STATES, H, W)
+    x, _ = next(iter(loader))  # x: (B, cond_time, NUM_IN_STATES, H, W)
     grid = get_grid(_IMG_H, _IMG_W)
 
     torch.manual_seed(SEED)

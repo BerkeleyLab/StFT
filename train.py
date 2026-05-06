@@ -9,7 +9,6 @@ if __name__ == "__main__":
         "modes": ((8, 8), (8, 8), (8, 8)),
         "dim": 128,
         "num_heads": 1,
-        "snapshots": 20,
         "lr": 1e-4,
         "max_epochs": 1,
         "batchsize": 8,
