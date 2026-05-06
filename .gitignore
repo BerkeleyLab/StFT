@@ -10,3 +10,7 @@ __pycache__/
 tests/reference_outputs/
 CLAUDE.md
 notes/
+slurm/
+scripts/
+wandb/
+data/
