@@ -7,7 +7,7 @@ import torch
 import wandb
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
-from stft import StFT, get_grid, TrainingDataset, RolloutDataset, load_dataset
+from stft import StFT, get_grid, TrainingDataset, SnapshotDataset, RolloutDataset, load_dataset
 
 class LpLoss(object):
     def __init__(self, p=2, size_average=True, reduction=True):
@@ -64,6 +64,13 @@ class Trainer:
         self.save_path = Path(config["save_path"])
         self.save_every_n = config["save_every_n"]
         self.condition = config["condition_blocks"]
+        self.use_snapshots = config["use_snapshots"]
+        self.snapshot_length = config["snapshot_length"]
+        if self.use_snapshots and (self.snapshot_length <= self.cond_time):
+            raise ValueError(
+                f"snapshot_length ({self.snapshot_length}) must be greater than "
+                f"cond_time ({self.cond_time}) when use_snapshots=True"
+            )
         self.epoch = 0
         self.start_epoch = 0
         self.train_time = 0.0
@@ -120,8 +127,22 @@ class Trainer:
         self.train_std = torch.tensor(train_std, dtype=torch.float32, device=self.device)
         norm_mean = torch.tensor(train_mean, dtype=torch.float32).squeeze(0).squeeze(0)
         norm_std = torch.tensor(train_std, dtype=torch.float32).squeeze(0).squeeze(0)
+        if self.use_snapshots:
+            train_dataset = SnapshotDataset(
+                dataset.train,
+                snapshot_length=self.snapshot_length,
+                mean=norm_mean,
+                std=norm_std,
+            )
+        else:
+            train_dataset = TrainingDataset(
+                dataset.train,
+                cond_time=self.cond_time,
+                mean=norm_mean,
+                std=norm_std,
+            )
         self.train_loader = DataLoader(
-            TrainingDataset(dataset.train, cond_time=self.cond_time, mean=norm_mean, std=norm_std),
+            train_dataset,
             batch_size=self.batchsize,
             shuffle=True,
         )
@@ -164,49 +185,70 @@ class Trainer:
         if self.device != "cpu":
             torch.cuda.reset_peak_memory_stats(self.device)
         t0 = time.time()
-        train_l2_levels = torch.zeros(self.num_levels, dtype=torch.float32, device=self.device)
-        train_l2 = 0
-        train_num_examples = 0
-        for x, y in self.train_loader:
-            x = x.to(self.device)
-            y = y.to(self.device)
-            B = x.shape[0]
-            train_num_examples += B * self.num_in_states
-            preds = self.model(x, self.grid)
-            sum_residues = torch.zeros_like(
-                preds[0].reshape(B * self.num_in_states, -1),
-                dtype=torch.float32,
-            )
-            for level in range(self.num_levels):
-                cur_preds = preds[level]
-                sum_residues += cur_preds.reshape(B * self.num_in_states, -1)
-                train_l2_levels[level] += self.myloss(
-                    cur_preds.reshape(B * self.num_in_states, -1),
-                    y.reshape(B * self.num_in_states, -1),
-                ).detach()
-            loss = self.myloss(
-                sum_residues,
-                y.reshape(B * self.num_in_states, -1),
-            )
-            self.optimizer.zero_grad()
-            loss.backward()
-            clip_grad_norm_(self.model.parameters(), max_norm=10.0)
-            self.optimizer.step()
-            train_l2 += loss.detach()
+        self._epoch_l2_levels = torch.zeros(self.num_levels, dtype=torch.float32, device=self.device)
+        self._epoch_l2 = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._epoch_num_examples = 0
+        for batch in self.train_loader:
+            if self.use_snapshots:
+                self.train_snapshot_batch(batch)
+            else:
+                x, y = batch
+                self.train_batch(x, y)
             if self._stopped:
                 break
         elapsed = time.time() - t0
         self.train_time += elapsed / (60 * 60)
-        n = train_num_examples or 1
+        n = self._epoch_num_examples or 1
         model_metrics = {
-            "train_l2": train_l2 / n,
-            "level_losses": train_l2_levels / n,
+            "train_l2": self._epoch_l2 / n,
+            "level_losses": self._epoch_l2_levels / n,
         }
-        comp_metrics = {"throughput_samples_per_sec": train_num_examples / elapsed} if train_num_examples > 0 else {}
+        comp_metrics = (
+            {"throughput_samples_per_sec": self._epoch_num_examples / elapsed}
+            if self._epoch_num_examples > 0
+            else {}
+        )
         if self.device != "cpu":
             comp_metrics["peak_gpu_memory_gb"] = torch.cuda.max_memory_allocated(self.device) / 1024**3
             comp_metrics["reserved_gpu_memory_gb"] = torch.cuda.max_memory_reserved(self.device) / 1024**3
         return model_metrics, comp_metrics
+
+    def train_batch(self, x, y):
+        x = x.to(self.device)
+        y = y.to(self.device)
+        B = x.shape[0]
+        preds = self.model(x, self.grid)
+        sum_residues = torch.zeros_like(
+            preds[0].reshape(B * self.num_in_states, -1),
+            dtype=torch.float32,
+        )
+        for level in range(self.num_levels):
+            cur_preds = preds[level]
+            sum_residues += cur_preds.reshape(B * self.num_in_states, -1)
+            self._epoch_l2_levels[level] += self.myloss(
+                cur_preds.reshape(B * self.num_in_states, -1),
+                y.reshape(B * self.num_in_states, -1),
+            ).detach()
+        loss = self.myloss(
+            sum_residues,
+            y.reshape(B * self.num_in_states, -1),
+        )
+        self.optimizer.zero_grad()
+        loss.backward()
+        clip_grad_norm_(self.model.parameters(), max_norm=10.0)
+        self.optimizer.step()
+        self._epoch_l2 += loss.detach()
+        self._epoch_num_examples += B * self.num_in_states
+
+    def train_snapshot_batch(self, snapshot):
+        snapshot = snapshot.to(self.device)
+        L = snapshot.shape[1]
+        for i in range(L - self.cond_time):
+            x = snapshot[:, i : i + self.cond_time]
+            y = snapshot[:, i + self.cond_time]
+            self.train_batch(x, y)
+            if self._stopped:
+                break
 
     def evaluate(self, loader):
         num_examples = 0

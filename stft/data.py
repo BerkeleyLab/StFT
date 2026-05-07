@@ -1,4 +1,5 @@
 import json
+import random
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,6 +93,32 @@ class TrainingDataset(Dataset):
             x = (x - self.mean) / self.std
             y = (y - self.mean) / self.std
         return x, y
+
+
+class SnapshotDataset(Dataset):
+    def __init__(self, data, snapshot_length, mean=None, std=None):
+        self.data = data
+        self.N, self.T, *_ = data.shape
+        if snapshot_length > self.T:
+            raise ValueError(
+                f"snapshot_length={snapshot_length} exceeds trajectory length T={self.T}"
+            )
+        self.snapshot_length = snapshot_length
+        self.mean = mean
+        self.std = std
+
+    def __len__(self):
+        return self.N
+
+    def __getitem__(self, idx):
+        start = random.randint(0, self.T - self.snapshot_length)
+        snap = torch.tensor(
+            np.array(self.data[idx, start : start + self.snapshot_length]),
+            dtype=torch.float32,
+        )
+        if self.mean is not None:
+            snap = (snap - self.mean) / self.std
+        return snap
 
 
 class RolloutDataset(Dataset):

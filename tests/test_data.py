@@ -11,7 +11,14 @@ import torch
 from torch.utils.data import DataLoader
 
 from stft import StFT
-from stft.data import Dataset5D, TrainingDataset, RolloutDataset, get_grid, load_dataset
+from stft.data import (
+    Dataset5D,
+    TrainingDataset,
+    SnapshotDataset,
+    RolloutDataset,
+    get_grid,
+    load_dataset,
+)
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -168,6 +175,82 @@ def test_training_dataset_dataloader():
     assert y_batch.shape == (2, C, H, W)
     assert x_batch.dtype == torch.float32
     assert y_batch.dtype == torch.float32
+
+
+# ---------------------------------------------------------------------------
+# 2b. SnapshotDataset
+# ---------------------------------------------------------------------------
+
+
+SNAPSHOT_LEN = 5
+
+
+def test_snapshot_dataset_len():
+    data = make_array()
+    ds = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
+    assert len(ds) == N
+
+
+def test_snapshot_dataset_item_shape():
+    data = make_array()
+    ds = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
+    snap = ds[0]
+    assert snap.shape == (SNAPSHOT_LEN, C, H, W)
+
+
+def test_snapshot_dataset_item_dtype():
+    data = make_array()
+    ds = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
+    assert ds[0].dtype == torch.float32
+
+
+def test_snapshot_dataset_window_lies_in_trajectory():
+    import random as _random
+
+    data = make_array()
+    ds = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
+    _random.seed(SEED)
+    snap = ds[1]
+    # The returned window must equal some contiguous slice of trajectory 1.
+    matched = False
+    for start in range(T - SNAPSHOT_LEN + 1):
+        ref = torch.tensor(data[1, start : start + SNAPSHOT_LEN], dtype=torch.float32)
+        if torch.allclose(snap, ref):
+            matched = True
+            break
+    assert matched, "SnapshotDataset returned a window not present in trajectory"
+
+
+def test_snapshot_dataset_normalization():
+    import random as _random
+
+    data = make_array()
+    mean = torch.full((C, 1, 1), float(data.mean()))
+    std = torch.full((C, 1, 1), float(data.std()))
+
+    ds_raw = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
+    ds_norm = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN, mean=mean, std=std)
+
+    _random.seed(SEED)
+    raw = ds_raw[0]
+    _random.seed(SEED)
+    norm = ds_norm[0]
+    assert torch.allclose(norm, (raw - mean) / std, atol=1e-6)
+
+
+def test_snapshot_dataset_too_long_raises():
+    data = make_array()
+    with pytest.raises(ValueError, match="snapshot_length"):
+        SnapshotDataset(data, snapshot_length=T + 1)
+
+
+def test_snapshot_dataset_dataloader():
+    data = make_array()
+    ds = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
+    loader = DataLoader(ds, batch_size=2)
+    batch = next(iter(loader))
+    assert batch.shape == (2, SNAPSHOT_LEN, C, H, W)
+    assert batch.dtype == torch.float32
 
 
 # ---------------------------------------------------------------------------
