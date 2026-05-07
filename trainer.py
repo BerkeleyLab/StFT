@@ -1,4 +1,6 @@
 from pathlib import Path
+import signal
+import sys
 import time
 import numpy as np
 import torch
@@ -65,23 +67,41 @@ class Trainer:
         self.epoch = 0
         self.start_epoch = 0
         self.train_time = 0.0
+        self._stopped = False
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def setup(self):
         self.save_path.mkdir(parents=True, exist_ok=True)
         self.load_data()
         self.build_model()
-        checkpoints = sorted(self.save_path.glob("checkpoint_ep*.pt"))
-        if checkpoints:
-            self.load_checkpoint(checkpoints[-1])
+        signal.signal(signal.SIGTERM, self._handle_sigterm)
+        latest = self.save_path / "latest.pt"
+        if latest.exists():
+            self.load_checkpoint(latest)
+
+    def _handle_sigterm(self, signum, frame):
+        self._stopped = True
+
+    def _get_wandb_run_id(self):
+        run_id_file = self.save_path / "wandb_run_id.txt"
+        if run_id_file.exists():
+            return run_id_file.read_text().strip()
+        run_id = wandb.util.generate_id()
+        run_id_file.write_text(run_id)
+        return run_id
         
     def run(self):
         self.setup()
-        wandb.init(project="stft", config=self.config)
+        run_id = self._get_wandb_run_id()
+        wandb.init(project="stft", config=self.config, id=run_id, resume="allow")
         for epoch in range(self.start_epoch, self.max_epochs):
             self.epoch = epoch
             self.model.train()
             model_metrics, comp_metrics = self.train_epoch()
+            if self._stopped:
+                self.save_checkpoint()
+                wandb.finish()
+                sys.exit(0)
             wandb.log({"epoch": epoch, **comp_metrics})
             self.model.eval()
             if epoch % 10 == 0:
@@ -173,14 +193,17 @@ class Trainer:
             clip_grad_norm_(self.model.parameters(), max_norm=10.0)
             self.optimizer.step()
             train_l2 += loss.detach()
+            if self._stopped:
+                break
         elapsed = time.time() - t0
         self.train_time += elapsed / (60 * 60)
+        n = train_num_examples or 1
         model_metrics = {
-            "train_l2": train_l2 / train_num_examples,
-            "level_losses": train_l2_levels / train_num_examples,
+            "train_l2": train_l2 / n,
+            "level_losses": train_l2_levels / n,
         }
-        comp_metrics = {"throughput_samples_per_sec": train_num_examples / elapsed}
-        if torch.cuda.is_available():
+        comp_metrics = {"throughput_samples_per_sec": train_num_examples / elapsed} if train_num_examples > 0 else {}
+        if self.device != "cpu":
             comp_metrics["peak_gpu_memory_gb"] = torch.cuda.max_memory_allocated(self.device) / 1024**3
             comp_metrics["reserved_gpu_memory_gb"] = torch.cuda.max_memory_reserved(self.device) / 1024**3
         return model_metrics, comp_metrics
@@ -250,10 +273,14 @@ class Trainer:
                 "epoch": self.epoch,
                 "train_time": self.train_time,
         }
-        checkpoint_path = self.save_path / f"checkpoint_ep{self.epoch:06d}.pt"
+        checkpoint_path = self.save_path / "latest.pt"
         if is_best:
             checkpoint_path = self.save_path / "best.pt"
-        torch.save(checkpoint, checkpoint_path)
+        tmp_path = checkpoint_path.with_suffix(".pt.tmp")
+        print(f"Saving checkpoint to {tmp_path}...")
+        torch.save(checkpoint, tmp_path)
+        tmp_path.replace(checkpoint_path)
+        print(f"Checkpoint successfully saved to {checkpoint_path}")
 
     def load_checkpoint(self, path):
         checkpoint = torch.load(path, map_location=self.device)

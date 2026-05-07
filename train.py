@@ -16,7 +16,7 @@ if __name__ == "__main__":
         "lift_channel": 64,
         "act": "gelu",
         "save_path": "/pscratch/sd/a/atrupe/StFT/experiments/test",
-        "save_every_n": 100,
+        "save_every_n": 10,
         "condition_blocks": True
     }
     trainer = Trainer(config)
