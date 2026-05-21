@@ -7,7 +7,6 @@ __pycache__/
 *.npy
 *.h5
 *.hdf5
-tests/reference_outputs/
 CLAUDE.md
 AGENTS.md
 notes/
@@ -15,3 +14,5 @@ slurm/
 scripts/
 wandb/
 data/
+original-code/
+pytest-of*/
