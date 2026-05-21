@@ -9,6 +9,7 @@ __pycache__/
 *.hdf5
 tests/reference_outputs/
 CLAUDE.md
+AGENTS.md
 notes/
 slurm/
 scripts/
