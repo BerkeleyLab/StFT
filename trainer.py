@@ -1,13 +1,26 @@
 from pathlib import Path
 import signal
-import sys
 import time
 import numpy as np
 import torch
 import wandb
-from torch.utils.data import DataLoader
+from torch.nn.parallel import DistributedDataParallel
 from torch.nn.utils import clip_grad_norm_
+from torch.utils.data import DataLoader, DistributedSampler
+
 from stft import StFT, get_grid, TrainingDataset, SnapshotDataset, RolloutDataset, load_dataset
+from stft.distributed import (
+    barrier,
+    cleanup_distributed,
+    distributed_is_enabled,
+    distributed_world_size,
+    is_main_process,
+    log_distributed_preflight,
+    reduce_max,
+    reduce_sum,
+    setup_distributed,
+    unwrap_model,
+)
 
 class LpLoss(object):
     def __init__(self, p=2, size_average=True, reduction=True):
@@ -75,10 +88,14 @@ class Trainer:
         self.start_epoch = 0
         self.train_time = 0.0
         self._stopped = False
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device, self.local_rank, self.rank, self.world_size = setup_distributed()
+        self._wandb_run = None
 
     def setup(self):
-        self.save_path.mkdir(parents=True, exist_ok=True)
+        if is_main_process():
+            self.save_path.mkdir(parents=True, exist_ok=True)
+        barrier()
+        log_distributed_preflight(self.device, self.local_rank, self.rank, self.world_size)
         self.load_data()
         self.build_model()
         signal.signal(signal.SIGTERM, self._handle_sigterm)
@@ -99,23 +116,46 @@ class Trainer:
         
     def run(self):
         self.setup()
-        run_id = self._get_wandb_run_id()
-        wandb.init(project="stft", config=self.config, id=run_id, resume="allow")
-        for epoch in range(self.start_epoch, self.max_epochs):
-            self.epoch = epoch
-            self.model.train()
-            model_metrics, comp_metrics = self.train_epoch()
-            if self._stopped:
-                self.save_checkpoint()
+        if is_main_process():
+            run_id = self._get_wandb_run_id()
+            self._wandb_run = wandb.init(
+                project="stft",
+                config=self.config,
+                id=run_id,
+                resume="allow",
+            )
+            print(
+                " ".join(
+                    [
+                        f"per_rank_batch={self.batchsize}",
+                        f"world_size={self.world_size}",
+                        "gradient_accumulation_steps=1",
+                        f"effective_global_batch={self.batchsize * self.world_size}",
+                    ]
+                ),
+                flush=True,
+            )
+        try:
+            for epoch in range(self.start_epoch, self.max_epochs):
+                self.epoch = epoch
+                self.model.train()
+                model_metrics, comp_metrics = self.train_epoch()
+                if self._sync_stop_requested():
+                    self.save_checkpoint()
+                    break
+                if is_main_process():
+                    wandb.log({"epoch": epoch, **comp_metrics})
+                self.model.eval()
+                if epoch % 10 == 0:
+                    if is_main_process():
+                        self.evaluate_and_log(model_metrics)
+                    barrier()
+                if epoch % self.save_every_n == 0:
+                    self.save_checkpoint()
+        finally:
+            if self._wandb_run is not None:
                 wandb.finish()
-                sys.exit(0)
-            wandb.log({"epoch": epoch, **comp_metrics})
-            self.model.eval()
-            if epoch % 10 == 0:
-                self.evaluate_and_log(model_metrics)
-            if epoch % self.save_every_n == 0:
-                self.save_checkpoint()
-        wandb.finish()
+            cleanup_distributed()
 
     def load_data(self):
         dataset = load_dataset(self.dataset_path)
@@ -141,10 +181,16 @@ class Trainer:
                 mean=norm_mean,
                 std=norm_std,
             )
+        self.train_sampler = (
+            DistributedSampler(train_dataset, shuffle=True)
+            if distributed_world_size() > 1
+            else None
+        )
         self.train_loader = DataLoader(
             train_dataset,
             batch_size=self.batchsize,
-            shuffle=True,
+            sampler=self.train_sampler,
+            shuffle=self.train_sampler is None,
         )
         self.test_loader = DataLoader(
             RolloutDataset(dataset.test, mean=norm_mean, std=norm_std),
@@ -159,7 +205,7 @@ class Trainer:
         in_channels = (2 + self.num_in_states) * self.cond_time
         self.grid = get_grid(self.img_size[0], self.img_size[1]).to(self.device)
         self.myloss = LpLoss(size_average=False)
-        self.model = StFT(
+        raw_model = StFT(
             self.cond_time,
             self.num_in_states + 2,
             self.patch_sizes,
@@ -176,13 +222,26 @@ class Trainer:
             act=self.act,
             condition_blocks=self.condition
         ).to(self.device)
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+        self.optimizer = torch.optim.AdamW(raw_model.parameters(), lr=self.lr)
+        if distributed_is_enabled():
+            if self.device.type == "cuda":
+                self.model = DistributedDataParallel(
+                    raw_model,
+                    device_ids=[self.device.index],
+                    output_device=self.device.index,
+                )
+            else:
+                self.model = DistributedDataParallel(raw_model)
+        else:
+            self.model = raw_model
         self.best_val = torch.tensor(1e10, dtype=torch.float32, device=self.device)
         self.best_test = torch.tensor(1e10, dtype=torch.float32, device=self.device)
         self.best_test_under_val = torch.tensor(1e10, dtype=torch.float32, device=self.device)
 
     def train_epoch(self):
-        if self.device != "cpu":
+        if self.train_sampler is not None:
+            self.train_sampler.set_epoch(self.epoch)
+        if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
         t0 = time.time()
         self._epoch_l2_levels = torch.zeros(self.num_levels, dtype=torch.float32, device=self.device)
@@ -194,23 +253,38 @@ class Trainer:
             else:
                 x, y = batch
                 self.train_batch(x, y)
-            if self._stopped:
+            if self._sync_stop_requested():
                 break
         elapsed = time.time() - t0
         self.train_time += elapsed / (60 * 60)
-        n = self._epoch_num_examples or 1
+        local_n = torch.tensor(self._epoch_num_examples, dtype=torch.float64, device=self.device)
+        global_n = reduce_sum(local_n).clamp_min(1)
+        global_l2 = reduce_sum(self._epoch_l2.to(torch.float64))
+        global_l2_levels = reduce_sum(self._epoch_l2_levels.to(torch.float64))
         model_metrics = {
-            "train_l2": self._epoch_l2 / n,
-            "level_losses": self._epoch_l2_levels / n,
+            "train_l2": global_l2 / global_n,
+            "level_losses": global_l2_levels / global_n,
         }
+        global_examples = reduce_sum(local_n)
+        max_elapsed = reduce_max(torch.tensor(elapsed, dtype=torch.float64, device=self.device))
         comp_metrics = (
-            {"throughput_samples_per_sec": self._epoch_num_examples / elapsed}
-            if self._epoch_num_examples > 0
+            {"throughput_samples_per_sec": global_examples.item() / max_elapsed.item()}
+            if global_examples.item() > 0 and max_elapsed.item() > 0
             else {}
         )
-        if self.device != "cpu":
-            comp_metrics["peak_gpu_memory_gb"] = torch.cuda.max_memory_allocated(self.device) / 1024**3
-            comp_metrics["reserved_gpu_memory_gb"] = torch.cuda.max_memory_reserved(self.device) / 1024**3
+        if self.device.type == "cuda":
+            peak_memory = torch.tensor(
+                torch.cuda.max_memory_allocated(self.device) / 1024**3,
+                dtype=torch.float64,
+                device=self.device,
+            )
+            reserved_memory = torch.tensor(
+                torch.cuda.max_memory_reserved(self.device) / 1024**3,
+                dtype=torch.float64,
+                device=self.device,
+            )
+            comp_metrics["peak_gpu_memory_gb"] = reduce_max(peak_memory).item()
+            comp_metrics["reserved_gpu_memory_gb"] = reduce_max(reserved_memory).item()
         return model_metrics, comp_metrics
 
     def train_batch(self, x, y):
@@ -235,7 +309,7 @@ class Trainer:
         )
         self.optimizer.zero_grad()
         loss.backward()
-        clip_grad_norm_(self.model.parameters(), max_norm=10.0)
+        clip_grad_norm_(unwrap_model(self.model).parameters(), max_norm=10.0)
         self.optimizer.step()
         self._epoch_l2 += loss.detach()
         self._epoch_num_examples += B * self.num_in_states
@@ -247,12 +321,13 @@ class Trainer:
             x = snapshot[:, i : i + self.cond_time]
             y = snapshot[:, i + self.cond_time]
             self.train_batch(x, y)
-            if self._stopped:
+            if self._sync_stop_requested():
                 break
 
     def evaluate(self, loader):
         num_examples = 0
-        l2 = 0.0
+        l2 = torch.zeros((), dtype=torch.float32, device=self.device)
+        eval_model = unwrap_model(self.model)
         with torch.no_grad():
             for batch in loader:
                 batch = batch.to(self.device)
@@ -269,7 +344,7 @@ class Trainer:
                         )
                     x_old = x.detach().clone()
                     y = batch[:, i + self.cond_time]
-                    preds = self.model(x, self.grid)
+                    preds = eval_model(x, self.grid)
                     sum_residues = torch.zeros_like(
                         preds[0].reshape(B * self.num_in_states, -1),
                         device=self.device,
@@ -282,7 +357,7 @@ class Trainer:
                         self.unnorm_data(y, B, C, H, W).reshape(B * self.num_in_states, -1),
                     )
                     preds_or = sum_residues.reshape(B, C, H, W)
-        return l2 / num_examples
+        return l2 / max(num_examples, 1)
 
     def evaluate_and_log(self, model_metrics):
         error_val = self.evaluate(self.val_loader)
@@ -306,11 +381,15 @@ class Trainer:
             metrics[f"level_{level}_loss"] = model_metrics["level_losses"][level].item()
         wandb.log(metrics)
         if improved_val:
-            self.save_checkpoint(is_best=True)
+            self.save_checkpoint(is_best=True, sync=False)
 
-    def save_checkpoint(self, is_best=False):
+    def save_checkpoint(self, is_best=False, sync=True):
+        if not is_main_process():
+            if sync:
+                barrier()
+            return
         checkpoint = {
-                "model_state": self.model.state_dict(),
+                "model_state": unwrap_model(self.model).state_dict(),
                 "optimizer_state": self.optimizer.state_dict(),
                 "epoch": self.epoch,
                 "train_time": self.train_time,
@@ -323,14 +402,21 @@ class Trainer:
         torch.save(checkpoint, tmp_path)
         tmp_path.replace(checkpoint_path)
         print(f"Checkpoint successfully saved to {checkpoint_path}")
+        if sync:
+            barrier()
 
     def load_checkpoint(self, path):
         checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint["model_state"])
+        unwrap_model(self.model).load_state_dict(checkpoint["model_state"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state"])
         self.train_time = checkpoint["train_time"]
         self.epoch = checkpoint["epoch"]
         self.start_epoch = self.epoch + 1
+
+    def _sync_stop_requested(self):
+        stop = torch.tensor(int(self._stopped), dtype=torch.int32, device=self.device)
+        self._stopped = bool(reduce_sum(stop).item())
+        return self._stopped
 
     def unnorm_data(self, data, B, C, H, W):
         return data.detach().clone().reshape(B, C, H, W).unsqueeze(1) * self.train_std + self.train_mean
