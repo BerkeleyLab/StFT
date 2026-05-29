@@ -132,20 +132,16 @@ def unwrap_model(model):
     return model.module if hasattr(model, "module") else model
 
 
-def _distributed_or_current(distributed: bool | None) -> bool:
-    return distributed_is_enabled() if distributed is None else distributed
-
-
-def reduce_sum(value: torch.Tensor, distributed: bool | None = None) -> torch.Tensor:
+def reduce_sum(value: torch.Tensor, distributed: bool = False) -> torch.Tensor:
     value = value.detach().clone()
-    if _distributed_or_current(distributed):
+    if distributed:
         dist.all_reduce(value, op=dist.ReduceOp.SUM)
     return value
 
 
-def reduce_max(value: torch.Tensor, distributed: bool | None = None) -> torch.Tensor:
+def reduce_max(value: torch.Tensor, distributed: bool = False) -> torch.Tensor:
     value = value.detach().clone()
-    if _distributed_or_current(distributed):
+    if distributed:
         dist.all_reduce(value, op=dist.ReduceOp.MAX)
     return value
 
@@ -153,14 +149,14 @@ def reduce_max(value: torch.Tensor, distributed: bool | None = None) -> torch.Te
 def reduce_mean_from_counts(
     numerator: torch.Tensor,
     denominator: torch.Tensor,
-    distributed: bool | None = None,
+    distributed: bool = False,
 ) -> torch.Tensor:
     total = reduce_sum(torch.stack([numerator.detach(), denominator.detach()]), distributed)
     return total[0] / total[1].clamp_min(1)
 
 
-def barrier(distributed: bool | None = None) -> None:
-    if _distributed_or_current(distributed):
+def barrier(distributed: bool = False) -> None:
+    if distributed:
         dist.barrier()
 
 

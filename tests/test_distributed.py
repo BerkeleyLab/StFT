@@ -21,7 +21,7 @@ _DIST_ENV_VARS = (
 def clean_distributed_env(monkeypatch):
     for name in _DIST_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(dist_utils, "DDP_LAUNCH_CONTRACT", None)
+    monkeypatch.setattr(dist_utils, "DDP_LAUNCHER", None)
 
 
 def test_plain_python_launch_contract():
