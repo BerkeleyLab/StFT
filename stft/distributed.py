@@ -5,7 +5,7 @@ import torch
 import torch.distributed as dist
 
 
-DDP_LAUNCH_CONTRACT = None
+DDP_LAUNCHER = None
 
 
 def using_torchrun_environment() -> bool:
@@ -17,8 +17,8 @@ def using_slurm_direct_environment() -> bool:
 
 
 def launch_contract() -> str:
-    if DDP_LAUNCH_CONTRACT is not None:
-        return DDP_LAUNCH_CONTRACT
+    if DDP_LAUNCHER is not None:
+        return DDP_LAUNCHER
     if using_torchrun_environment():
         return "torchrun"
     if using_slurm_direct_environment():
@@ -27,16 +27,16 @@ def launch_contract() -> str:
 
 
 def normalize_slurm_environment() -> None:
-    global DDP_LAUNCH_CONTRACT
-    if DDP_LAUNCH_CONTRACT is not None:
+    global DDP_LAUNCHER
+    if DDP_LAUNCHER is not None:
         return
 
     if using_torchrun_environment():
-        DDP_LAUNCH_CONTRACT = "torchrun"
+        DDP_LAUNCHER = "torchrun"
         return
 
     if using_slurm_direct_environment():
-        DDP_LAUNCH_CONTRACT = "slurm-direct"
+        DDP_LAUNCHER = "slurm-direct"
         os.environ["RANK"] = os.environ["SLURM_PROCID"]
         os.environ["WORLD_SIZE"] = os.environ["SLURM_NTASKS"]
         if "SLURM_LOCALID" in os.environ:
