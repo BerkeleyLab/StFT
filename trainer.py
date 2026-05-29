@@ -13,8 +13,6 @@ from stft.distributed import (
     barrier,
     cleanup_distributed,
     distributed_is_enabled,
-    distributed_world_size,
-    is_main_process,
     log_distributed_preflight,
     reduce_max,
     reduce_sum,
@@ -89,12 +87,14 @@ class Trainer:
         self.train_time = 0.0
         self._stopped = False
         self.device, self.local_rank, self.rank, self.world_size = setup_distributed()
+        self.distributed = distributed_is_enabled()
+        self.is_main = self.rank == 0
         self._wandb_run = None
 
     def setup(self):
-        if is_main_process():
+        if self.is_main:
             self.save_path.mkdir(parents=True, exist_ok=True)
-        barrier()
+        barrier(self.distributed)
         log_distributed_preflight(self.device, self.local_rank, self.rank, self.world_size)
         self.load_data()
         self.build_model()
@@ -116,7 +116,7 @@ class Trainer:
         
     def run(self):
         self.setup()
-        if is_main_process():
+        if self.is_main:
             run_id = self._get_wandb_run_id()
             self._wandb_run = wandb.init(
                 project="stft",
@@ -143,13 +143,13 @@ class Trainer:
                 if self._sync_stop_requested():
                     self.save_checkpoint()
                     break
-                if is_main_process():
+                if self.is_main:
                     wandb.log({"epoch": epoch, **comp_metrics})
                 self.model.eval()
                 if epoch % 10 == 0:
-                    if is_main_process():
+                    if self.is_main:
                         self.evaluate_and_log(model_metrics)
-                    barrier()
+                    barrier(self.distributed)
                 if epoch % self.save_every_n == 0:
                     self.save_checkpoint()
         finally:
@@ -183,7 +183,7 @@ class Trainer:
             )
         self.train_sampler = (
             DistributedSampler(train_dataset, shuffle=True)
-            if distributed_world_size() > 1
+            if self.distributed
             else None
         )
         self.train_loader = DataLoader(
@@ -223,7 +223,7 @@ class Trainer:
             condition_blocks=self.condition
         ).to(self.device)
         self.optimizer = torch.optim.AdamW(raw_model.parameters(), lr=self.lr)
-        if distributed_is_enabled():
+        if self.distributed:
             if self.device.type == "cuda":
                 self.model = DistributedDataParallel(
                     raw_model,
@@ -258,15 +258,18 @@ class Trainer:
         elapsed = time.time() - t0
         self.train_time += elapsed / (60 * 60)
         local_n = torch.tensor(self._epoch_num_examples, dtype=torch.float64, device=self.device)
-        global_n = reduce_sum(local_n).clamp_min(1)
-        global_l2 = reduce_sum(self._epoch_l2.to(torch.float64))
-        global_l2_levels = reduce_sum(self._epoch_l2_levels.to(torch.float64))
+        global_n = reduce_sum(local_n, self.distributed).clamp_min(1)
+        global_l2 = reduce_sum(self._epoch_l2.to(torch.float64), self.distributed)
+        global_l2_levels = reduce_sum(self._epoch_l2_levels.to(torch.float64), self.distributed)
         model_metrics = {
             "train_l2": global_l2 / global_n,
             "level_losses": global_l2_levels / global_n,
         }
-        global_examples = reduce_sum(local_n)
-        max_elapsed = reduce_max(torch.tensor(elapsed, dtype=torch.float64, device=self.device))
+        global_examples = reduce_sum(local_n, self.distributed)
+        max_elapsed = reduce_max(
+            torch.tensor(elapsed, dtype=torch.float64, device=self.device),
+            self.distributed,
+        )
         comp_metrics = (
             {"throughput_samples_per_sec": global_examples.item() / max_elapsed.item()}
             if global_examples.item() > 0 and max_elapsed.item() > 0
@@ -283,8 +286,8 @@ class Trainer:
                 dtype=torch.float64,
                 device=self.device,
             )
-            comp_metrics["peak_gpu_memory_gb"] = reduce_max(peak_memory).item()
-            comp_metrics["reserved_gpu_memory_gb"] = reduce_max(reserved_memory).item()
+            comp_metrics["peak_gpu_memory_gb"] = reduce_max(peak_memory, self.distributed).item()
+            comp_metrics["reserved_gpu_memory_gb"] = reduce_max(reserved_memory, self.distributed).item()
         return model_metrics, comp_metrics
 
     def train_batch(self, x, y):
@@ -384,9 +387,9 @@ class Trainer:
             self.save_checkpoint(is_best=True, sync=False)
 
     def save_checkpoint(self, is_best=False, sync=True):
-        if not is_main_process():
+        if not self.is_main:
             if sync:
-                barrier()
+                barrier(self.distributed)
             return
         checkpoint = {
                 "model_state": unwrap_model(self.model).state_dict(),
@@ -403,7 +406,7 @@ class Trainer:
         tmp_path.replace(checkpoint_path)
         print(f"Checkpoint successfully saved to {checkpoint_path}")
         if sync:
-            barrier()
+            barrier(self.distributed)
 
     def load_checkpoint(self, path):
         checkpoint = torch.load(path, map_location=self.device)
@@ -415,7 +418,7 @@ class Trainer:
 
     def _sync_stop_requested(self):
         stop = torch.tensor(int(self._stopped), dtype=torch.int32, device=self.device)
-        self._stopped = bool(reduce_sum(stop).item())
+        self._stopped = bool(reduce_sum(stop, self.distributed).item())
         return self._stopped
 
     def unnorm_data(self, data, B, C, H, W):
