@@ -9,6 +9,7 @@ __pycache__/
 *.hdf5
 CLAUDE.md
 AGENTS.md
+experiments/
 notes/
 slurm/
 wandb/

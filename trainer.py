@@ -144,7 +144,8 @@ class Trainer:
                 print(
                     f"epoch {epoch} | "
                     f"peak allocated: {comp_metrics["peak_gpu_memory_gb"]} GB | "
-                    f"peak reserved: {comp_metrics["reserved_gpu_memory_gb"]} GB"
+                    f"peak reserved: {comp_metrics["reserved_gpu_memory_gb"]} GB",
+                    flush=True
                 )
                 if self._sync_stop_requested():
                     self.save_checkpoint()

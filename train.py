@@ -10,7 +10,7 @@ if __name__ == "__main__":
         "dim": 128,
         "num_heads": 1,
         "lr": 1e-4,
-        "max_epochs": 1,
+        "max_epochs": 5,
         "batchsize": 8,
         "cond_time": 5,
         "lift_channel": 64,
