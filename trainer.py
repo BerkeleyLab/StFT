@@ -140,6 +140,11 @@ class Trainer:
                 self.epoch = epoch
                 self.model.train()
                 model_metrics, comp_metrics = self.train_epoch()
+                print(
+                    f"epoch {epoch} | "
+                    f"peak allocated: {comp_metrics["peak_gpu_memory_gb"]} GB | "
+                    f"peak reserved: {comp_metrics["reserved_gpu_memory_gb"]} GB"
+                )
                 if self._sync_stop_requested():
                     self.save_checkpoint()
                     break
@@ -276,6 +281,7 @@ class Trainer:
             else {}
         )
         if self.device.type == "cuda":
+            torch.cuda.synchronize() # REMOVE AFTER TESTING
             peak_memory = torch.tensor(
                 torch.cuda.max_memory_allocated(self.device) / 1024**3,
                 dtype=torch.float64,
@@ -288,6 +294,7 @@ class Trainer:
             )
             comp_metrics["peak_gpu_memory_gb"] = reduce_max(peak_memory, self.distributed).item()
             comp_metrics["reserved_gpu_memory_gb"] = reduce_max(reserved_memory, self.distributed).item()
+            
         return model_metrics, comp_metrics
 
     def train_batch(self, x, y):
