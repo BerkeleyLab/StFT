@@ -86,24 +86,25 @@ class Trainer:
         self.start_epoch = 0
         self.train_time = 0.0
         self._stopped = False
-        self.device, self.local_rank, self.rank, self.world_size = setup_distributed()
-        self.distributed = distributed_is_enabled()
-        self.is_main = self.rank == 0
         self._wandb_run = None
 
     def setup(self):
+        self.device, self.local_rank, self.rank, self.world_size = setup_distributed()
+        self.distributed = distributed_is_enabled()
+        self.is_main = self.rank == 0
+        signal.signal(signal.SIGTERM, self._handle_stop_signal)
+        
         if self.is_main:
             self.save_path.mkdir(parents=True, exist_ok=True)
         barrier(self.distributed)
         log_distributed_preflight(self.device, self.local_rank, self.rank, self.world_size)
         self.load_data()
         self.build_model()
-        signal.signal(signal.SIGTERM, self._handle_sigterm)
         latest = self.save_path / "latest.pt"
         if latest.exists():
             self.load_checkpoint(latest)
 
-    def _handle_sigterm(self, signum, frame):
+    def _handle_stop_signal(self, signum, frame):
         self._stopped = True
 
     def _get_wandb_run_id(self):
@@ -115,27 +116,27 @@ class Trainer:
         return run_id
         
     def run(self):
-        self.setup()
-        if self.is_main:
-            run_id = self._get_wandb_run_id()
-            self._wandb_run = wandb.init(
-                project="stft",
-                config=self.config,
-                id=run_id,
-                resume="allow",
-            )
-            print(
-                " ".join(
-                    [
-                        f"per_rank_batch={self.batchsize}",
-                        f"world_size={self.world_size}",
-                        "gradient_accumulation_steps=1",
-                        f"effective_global_batch={self.batchsize * self.world_size}",
-                    ]
-                ),
-                flush=True,
-            )
         try:
+            self.setup()
+            if self.is_main:
+                run_id = self._get_wandb_run_id()
+                self._wandb_run = wandb.init(
+                    project="stft",
+                    config=self.config,
+                    id=run_id,
+                    resume="allow",
+                )
+                print(
+                    " ".join(
+                        [
+                            f"per_rank_batch={self.batchsize}",
+                            f"world_size={self.world_size}",
+                            "gradient_accumulation_steps=1",
+                            f"effective_global_batch={self.batchsize * self.world_size}",
+                        ]
+                    ),
+                    flush=True,
+                )
             for epoch in range(self.start_epoch, self.max_epochs):
                 self.epoch = epoch
                 self.model.train()
