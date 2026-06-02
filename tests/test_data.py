@@ -188,7 +188,7 @@ SNAPSHOT_LEN = 5
 def test_snapshot_dataset_len():
     data = make_array()
     ds = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
-    assert len(ds) == N
+    assert len(ds) == N * (T - SNAPSHOT_LEN + 1)
 
 
 def test_snapshot_dataset_item_shape():
@@ -205,25 +205,16 @@ def test_snapshot_dataset_item_dtype():
 
 
 def test_snapshot_dataset_window_lies_in_trajectory():
-    import random as _random
-
     data = make_array()
     ds = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
-    _random.seed(SEED)
-    snap = ds[1]
+    idx = T - SNAPSHOT_LEN + 1
+    snap = ds[idx]
     # The returned window must equal some contiguous slice of trajectory 1.
-    matched = False
-    for start in range(T - SNAPSHOT_LEN + 1):
-        ref = torch.tensor(data[1, start : start + SNAPSHOT_LEN], dtype=torch.float32)
-        if torch.allclose(snap, ref):
-            matched = True
-            break
-    assert matched, "SnapshotDataset returned a window not present in trajectory"
+    ref = torch.tensor(data[1, :SNAPSHOT_LEN], dtype=torch.float32)
+    assert torch.allclose(snap, ref)
 
 
 def test_snapshot_dataset_normalization():
-    import random as _random
-
     data = make_array()
     mean = torch.full((C, 1, 1), float(data.mean()))
     std = torch.full((C, 1, 1), float(data.std()))
@@ -231,9 +222,7 @@ def test_snapshot_dataset_normalization():
     ds_raw = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
     ds_norm = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN, mean=mean, std=std)
 
-    _random.seed(SEED)
     raw = ds_raw[0]
-    _random.seed(SEED)
     norm = ds_norm[0]
     assert torch.allclose(norm, (raw - mean) / std, atol=1e-6)
 

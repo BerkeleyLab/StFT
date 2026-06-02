@@ -1,5 +1,4 @@
 import json
-import random
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -106,14 +105,19 @@ class SnapshotDataset(Dataset):
         self.snapshot_length = snapshot_length
         self.mean = mean
         self.std = std
+        self.indices = [
+            (n, start)
+            for n in range(self.N)
+            for start in range(self.T - snapshot_length + 1)
+        ]
 
     def __len__(self):
-        return self.N
+        return len(self.indices)
 
     def __getitem__(self, idx):
-        start = random.randint(0, self.T - self.snapshot_length)
+        n, start = self.indices[idx]
         snap = torch.tensor(
-            np.array(self.data[idx, start : start + self.snapshot_length]),
+            np.array(self.data[n, start : start + self.snapshot_length]),
             dtype=torch.float32,
         )
         if self.mean is not None:
