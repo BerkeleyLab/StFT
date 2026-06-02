@@ -3,8 +3,8 @@
 #SBATCH -A m5031_g
 #SBATCH -J stft-ddp
 #SBATCH -C gpu
-#SBATCH -q regular
-#SBATCH -t 12:00:00
+#SBATCH -q debug
+#SBATCH -t 00:30:00
 #SBATCH -N 2
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
@@ -15,6 +15,7 @@
 #SBATCH -o stft-ddp-%j.out
 #SBATCH -e stft-ddp-%j.err
 #SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=adamrupe@lbl.gov
 
 export OMP_NUM_THREADS=8 
 export MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)"
@@ -27,4 +28,4 @@ srun --cpu-bind=cores shifter bash -c \
     --rdzv-backend=c10d \
     --rdzv-endpoint="${MASTER_ADDR}:${MASTER_PORT}" \
     --rdzv-id="${SLURM_JOB_ID}" \
-    train.py
+    ../train.py
