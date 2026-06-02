@@ -108,7 +108,10 @@ def setup_distributed() -> tuple[torch.device, int, int, int]:
         else:
             device = torch.device("cpu")
             backend = "gloo"
-        dist.init_process_group(backend=backend)
+        init_kwargs = {"backend": backend}
+        if device.type == "cuda":
+            init_kwargs["device_id"] = device
+        dist.init_process_group(**init_kwargs)
         rank = dist.get_rank()
         world_size = dist.get_world_size()
     else:
