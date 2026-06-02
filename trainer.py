@@ -440,7 +440,7 @@ class Trainer:
         self.C = C
         self.H = H 
         self.W = W
-        self.setup()
+        self.test_setup()
         for epoch in range(n_epochs):
             self.epoch = epoch
             self.model.train()
@@ -451,14 +451,51 @@ class Trainer:
                 f"peak reserved: {comp_metrics[1]} GB",
                 flush=True
             )
+
+    def test_setup(self):
+        signal.signal(signal.SIGTERM, self._handle_stop_signal)
+        self.device = torch.device("cuda:0")
+        self.distributed = False
+        self.rank = 0
+        self.world_size = 1
+        self.local_rank = 0
+        self.is_main = True
+        self.num_in_states = self.C
+        self.img_size = (self.H, self.W)
+        in_channels = (2 + self.num_in_states) * self.cond_time
+        self.grid = get_grid(self.img_size[0], self.img_size[1]).to(self.device)
+        self.myloss = LpLoss(size_average=False)
+        self.model = StFT(
+            self.cond_time,
+            self.num_in_states + 2,
+            self.patch_sizes,
+            self.overlaps,
+            in_channels,
+            self.num_in_states,
+            self.modes,
+            img_size=self.img_size,
+            lift_channel=self.lift_channel,
+            dim=self.dim,
+            vit_depth=self.vit_depth,
+            num_heads=self.num_heads,
+            mlp_dim=self.dim,
+            act=self.act,
+            condition_blocks=self.condition
+        ).to(self.device)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
     
     def test_train_epoch(self):
+        self._epoch_l2_levels = torch.zeros(self.num_levels, dtype=torch.float32, device=self.device)
+        self._epoch_l2 = torch.zeros((), dtype=torch.float32, device=self.device)
+        self._epoch_num_examples = 0
         for i in range(self.warmup_steps):
             self.test_train_snapshot_batch()
         if self.device.type == "cuda":
-                torch.cuda.reset_peak_memory_stats(self.device)
+            torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats(self.device)
         for i in range(self.measure_steps):
             self.test_train_snapshot_batch()
+        torch.cuda.synchronize()
         peak_memory = torch.cuda.max_memory_allocated(self.device) / 1024**3
         reserved_memory = torch.cuda.max_memory_reserved(self.device) / 1024**3
         comp_metrics = (peak_memory, reserved_memory)
@@ -466,8 +503,8 @@ class Trainer:
     
     def test_train_snapshot_batch(self):
         for i in range(self.snapshot_length - self.cond_time):
-            x = torch.randn(self.B, self.cond_time, self.C, self.H, self.W)
-            y = torch.randn(self.B, self.C, self.H, self.W)
+            x = torch.randn(self.B, self.cond_time, self.C, self.H, self.W, device=self.device)
+            y = torch.randn(self.B, self.C, self.H, self.W, device=self.device)
             self.train_batch(x, y)
             if self._sync_stop_requested():
                 break
