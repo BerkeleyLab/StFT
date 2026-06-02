@@ -432,3 +432,43 @@ class Trainer:
 
     def unnorm_data(self, data, B, C, H, W):
         return data.detach().clone().reshape(B, C, H, W).unsqueeze(1) * self.train_std + self.train_mean
+    
+    def run_test(self, n_epochs, warmup_steps, measure_steps, B, C, H, W):
+        self.warmup_steps = warmup_steps
+        self.measure_steps = measure_steps
+        self.B = B
+        self.C = C
+        self.H = H 
+        self.W = W
+        self.setup()
+        for epoch in range(n_epochs):
+            self.epoch = epoch
+            self.model.train()
+            comp_metrics = self.test_train_epoch()
+            print(
+                f"epoch {epoch} | "
+                f"peak allocated: {comp_metrics[0]} GB | "
+                f"peak reserved: {comp_metrics[1]} GB",
+                flush=True
+            )
+    
+    def test_train_epoch(self):
+        for i in range(self.warmup_steps):
+            self.test_train_snapshot_batch()
+        if self.device.type == "cuda":
+                torch.cuda.reset_peak_memory_stats(self.device)
+        for i in range(self.measure_steps):
+            self.test_train_snapshot_batch()
+        peak_memory = torch.cuda.max_memory_allocated(self.device) / 1024**3
+        reserved_memory = torch.cuda.max_memory_reserved(self.device) / 1024**3
+        comp_metrics = (peak_memory, reserved_memory)
+        return comp_metrics
+    
+    def test_train_snapshot_batch(self):
+        for i in range(self.snapshot_length - self.cond_time):
+            x = torch.randn(self.B, self.cond_time, self.C, self.H, self.W)
+            y = torch.randn(self.B, self.C, self.H, self.W)
+            self.train_batch(x, y)
+            if self._sync_stop_requested():
+                break
+        return
