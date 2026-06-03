@@ -97,7 +97,7 @@ class Trainer:
         if self.is_main:
             self.save_path.mkdir(parents=True, exist_ok=True)
         barrier(self.distributed)
-        log_distributed_preflight(self.device, self.local_rank, self.rank, self.world_size)
+        # log_distributed_preflight(self.device, self.local_rank, self.rank, self.world_size)
         self.load_data()
         self.build_model()
         latest = self.save_path / "latest.pt"
@@ -125,17 +125,6 @@ class Trainer:
                     config=self.config,
                     id=run_id,
                     resume="allow",
-                )
-                print(
-                    " ".join(
-                        [
-                            f"per_rank_batch={self.batchsize}",
-                            f"world_size={self.world_size}",
-                            "gradient_accumulation_steps=1",
-                            f"effective_global_batch={self.batchsize * self.world_size}",
-                        ]
-                    ),
-                    flush=True,
                 )
             for epoch in range(self.start_epoch, self.max_epochs):
                 self.epoch = epoch
