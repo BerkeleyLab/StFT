@@ -93,7 +93,8 @@ class Trainer:
         self.distributed = distributed_is_enabled()
         self.is_main = self.rank == 0
         signal.signal(signal.SIGTERM, self._handle_stop_signal)
-        
+        signal.signal(signal.SIGUSR1, self._handle_stop_signal)
+
         if self.is_main:
             self.save_path.mkdir(parents=True, exist_ok=True)
         barrier(self.distributed)
@@ -105,6 +106,7 @@ class Trainer:
             self.load_checkpoint(latest)
 
     def _handle_stop_signal(self, signum, frame):
+        print(f"received signal {signal.Signals(signum).name} ({signum})", flush=True)
         self._stopped = True
 
     def _get_wandb_run_id(self):

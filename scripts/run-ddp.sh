@@ -4,8 +4,9 @@
 #SBATCH -J stft-ddp
 #SBATCH -C gpu
 #SBATCH -q debug
-#SBATCH -t 00:30:00
-#SBATCH -N 2
+#SBATCH -t 00:05:00
+#SBATCH -N 1
+#SBATCH --signal=USR1@120
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=128
@@ -20,6 +21,8 @@
 export OMP_NUM_THREADS=8 
 export MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)"
 export MASTER_PORT="${MASTER_PORT:-$((10000 + SLURM_JOB_ID % 50000))}"
+
+export WANDB_MODE="disabled"
 
 srun --cpu-bind=cores shifter bash -c \
     'unset NCCL_CROSS_NIC; exec torchrun "$@"' bash \
