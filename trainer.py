@@ -433,9 +433,10 @@ class Trainer:
     def unnorm_data(self, data, B, C, H, W):
         return data.detach().clone().reshape(B, C, H, W).unsqueeze(1) * self.train_std + self.train_mean
     
-    def run_test(self, n_epochs, warmup_steps, measure_steps, B, C, H, W):
+    def run_test(self, n_epochs, warmup_steps, measure_steps, dim_test, B, C, H, W):
         self.warmup_steps = warmup_steps
         self.measure_steps = measure_steps
+        self.dim_test = dim_test
         self.B = B
         self.C = C
         self.H = H 
@@ -446,9 +447,8 @@ class Trainer:
             self.model.train()
             comp_metrics = self.test_train_epoch()
             print(
-                f"epoch {epoch} | "
                 f"peak allocated: {comp_metrics[0]} GB | "
-                f"peak reserved: {comp_metrics[1]} GB",
+                f"peak reserved: {comp_metrics[1]} GB \n",
                 flush=True
             )
 
@@ -475,14 +475,21 @@ class Trainer:
             self.modes,
             img_size=self.img_size,
             lift_channel=self.lift_channel,
-            dim=self.dim,
+            dim=self.dim_test,
             vit_depth=self.vit_depth,
             num_heads=self.num_heads,
-            mlp_dim=self.dim,
+            mlp_dim=self.dim_test,
             act=self.act,
             condition_blocks=self.condition
         ).to(self.device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+        print(
+            f"batch_size: {self.B} | "
+            f"dim: {self.dim_test} | "
+            f"grid_H: {self.H} | "
+            f"grid_W: {self.W} | "
+            f"device: {self.device}"
+        )
     
     def test_train_epoch(self):
         self._epoch_l2_levels = torch.zeros(self.num_levels, dtype=torch.float32, device=self.device)
@@ -502,10 +509,11 @@ class Trainer:
         return comp_metrics
     
     def test_train_snapshot_batch(self):
-        for i in range(self.snapshot_length - self.cond_time):
-            x = torch.randn(self.B, self.cond_time, self.C, self.H, self.W, device=self.device)
-            y = torch.randn(self.B, self.C, self.H, self.W, device=self.device)
+        snapshot = torch.randn(self.B, self.snapshot_length, self.C, self.H, self.W, device=self.device)
+        L = snapshot.shape[1]
+        for i in range(L - self.cond_time):
+            x = snapshot[:, i : i + self.cond_time]
+            y = snapshot[:, i + self.cond_time]
             self.train_batch(x, y)
             if self._sync_stop_requested():
                 break
-        return

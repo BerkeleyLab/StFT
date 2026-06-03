@@ -7,7 +7,7 @@ if __name__ == "__main__":
         "overlaps": ((1, 1), (1, 1), (1, 1)),
         "vit_depth": (6, 6, 6),
         "modes": ((8, 8), (8, 8), (8, 8)),
-        "dim": 128,
+        "dim": 512,
         "num_heads": 1,
         "lr": 1e-4,
         "max_epochs": 5,
