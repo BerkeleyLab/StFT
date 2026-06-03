@@ -4,7 +4,7 @@
 #SBATCH -J stft-ddp
 #SBATCH -C gpu
 #SBATCH -q debug
-#SBATCH -t 00:05:00
+#SBATCH -t 00:10:00
 #SBATCH -N 1
 #SBATCH --signal=USR1@120
 #SBATCH --ntasks-per-node=1
@@ -13,8 +13,8 @@
 #SBATCH --image=nersc/pytorch:25.06.01
 #SBATCH --module=gpu,nccl-plugin
 #SBATCH -L scratch
-#SBATCH -o stft-ddp-%j.out
-#SBATCH -e stft-ddp-%j.err
+#SBATCH -o ../slurm/stft-ddp-%j.out
+#SBATCH -e ../slurm/stft-ddp-%j.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=adamrupe@lbl.gov
 

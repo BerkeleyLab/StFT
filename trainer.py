@@ -140,6 +140,7 @@ class Trainer:
                 )
                 if self._sync_stop_requested():
                     self.save_checkpoint()
+                    print(f"successful exit, total train time: {self.train_time} | {self.epoch} epochs")
                     break
                 if self.is_main:
                     wandb.log({"epoch": epoch, **comp_metrics})
