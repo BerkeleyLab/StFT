@@ -4,11 +4,11 @@
 #SBATCH -J stft-ddp
 #SBATCH -C gpu
 #SBATCH -q debug
-#SBATCH -t 00:05:00
+#SBATCH -t 00:10:00
 #SBATCH -N 2
 #SBATCH --signal=USR1@120
 #SBATCH --ntasks-per-node=4
-#SBATCH --gpus-per-task=1
+#SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=32
 #SBATCH --image=nersc/pytorch:25.06.01
 #SBATCH --module=gpu,nccl-plugin

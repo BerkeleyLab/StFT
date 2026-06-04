@@ -37,12 +37,16 @@ def normalize_slurm_environment() -> None:
 
     if using_slurm_direct_environment():
         DDP_LAUNCHER = "slurm-direct"
-        os.environ["RANK"] = os.environ["SLURM_PROCID"]
-        os.environ["WORLD_SIZE"] = os.environ["SLURM_NTASKS"]
-        if "SLURM_LOCALID" in os.environ:
-            os.environ["LOCAL_RANK"] = os.environ["SLURM_LOCALID"]
-        elif torch.cuda.is_available():
-            os.environ["LOCAL_RANK"] = str(int(os.environ["RANK"]) % torch.cuda.device_count())
+        rank = int(os.environ["SLURM_PROCID"])
+        world_size = int(os.environ["SLURM_NTASKS"])
+        os.environ["RANK"] = str(rank)
+        os.environ["WORLD_SIZE"] = str(world_size)
+        if torch.cuda.is_available():
+            visible_count = torch.cuda.device_count()
+            if visible_count <= 0:
+                raise RuntimeError("CUDA is available but no CUDA devices are visible")
+            slurm_localid = int(os.environ.get("SLURM_LOCALID", rank))
+            os.environ["LOCAL_RANK"] = str(slurm_localid % visible_count)
         else:
             os.environ["LOCAL_RANK"] = "0"
 
@@ -59,29 +63,9 @@ def distributed_local_rank() -> int:
     return int(os.environ.get("LOCAL_RANK", "0"))
 
 
-def distributed_cuda_device_index(local_rank: int) -> int:
-    visible_count = torch.cuda.device_count()
-    if visible_count <= 0:
-        raise RuntimeError("CUDA is available but no CUDA devices are visible")
-
-    if local_rank < visible_count:
-        return local_rank
-
-    if launch_contract() == "slurm-direct" and visible_count == 1:
-        return 0
-
-    raise RuntimeError(
-        "LOCAL_RANK is not a valid CUDA-visible device index: "
-        f"local_rank={local_rank}, cuda_device_count={visible_count}, "
-        f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}. "
-        "For direct Slurm launches, either make all node GPUs visible to each task "
-        "or map each task to cuda:0 when Slurm restricts each task to one visible GPU."
-    )
-
-
 def setup_distributed() -> tuple[torch.device, int, int, int]:
     normalize_slurm_environment()
-    if distributed_is_enabled():
+    if distributed_is_enabled(): # handle if this function has already been called
         local_rank = distributed_local_rank()
         rank = dist.get_rank()
         world_size = dist.get_world_size()
@@ -101,9 +85,17 @@ def setup_distributed() -> tuple[torch.device, int, int, int]:
             raise RuntimeError(f"Distributed launch is missing required environment variables: {missing}")
         local_rank = int(os.environ["LOCAL_RANK"])
         if torch.cuda.is_available():
-            cuda_device_index = distributed_cuda_device_index(local_rank)
-            torch.cuda.set_device(cuda_device_index)
-            device = torch.device(f"cuda:{cuda_device_index}")
+            visible_count = torch.cuda.device_count()
+            if visible_count <= 0:
+                raise RuntimeError("CUDA is available but no CUDA devices are visible")
+            if local_rank < 0 or local_rank >= visible_count:
+                raise RuntimeError(
+                    "LOCAL_RANK is not a valid CUDA-visible device index: "
+                    f"local_rank={local_rank}, cuda_device_count={visible_count}, "
+                    f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}."
+                )
+            torch.cuda.set_device(local_rank)
+            device = torch.device(f"cuda:{local_rank}")
             backend = "nccl"
         else:
             device = torch.device("cpu")

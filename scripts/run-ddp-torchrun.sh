@@ -4,9 +4,8 @@
 #SBATCH -J stft-ddp
 #SBATCH -C gpu
 #SBATCH -q debug
-#SBATCH -t 00:05:00
-#SBATCH -N 1
-#SBATCH --signal=USR1@120
+#SBATCH -t 00:10:00
+#SBATCH -N 2
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=128

@@ -91,6 +91,7 @@ class Trainer:
     def setup(self):
         self.device, self.local_rank, self.rank, self.world_size = setup_distributed()
         self.distributed = distributed_is_enabled()
+        log_distributed_preflight(self.device, self.local_rank, self.rank, self.world_size)
         self.is_main = self.rank == 0
         signal.signal(signal.SIGTERM, self._handle_stop_signal)
         signal.signal(signal.SIGUSR1, self._handle_stop_signal)
@@ -98,7 +99,6 @@ class Trainer:
         if self.is_main:
             self.save_path.mkdir(parents=True, exist_ok=True)
         barrier(self.distributed)
-        log_distributed_preflight(self.device, self.local_rank, self.rank, self.world_size)
         self.load_data()
         self.build_model()
         latest = self.save_path / "latest.pt"
