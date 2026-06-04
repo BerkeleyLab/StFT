@@ -98,7 +98,7 @@ class Trainer:
         if self.is_main:
             self.save_path.mkdir(parents=True, exist_ok=True)
         barrier(self.distributed)
-        # log_distributed_preflight(self.device, self.local_rank, self.rank, self.world_size)
+        log_distributed_preflight(self.device, self.local_rank, self.rank, self.world_size)
         self.load_data()
         self.build_model()
         latest = self.save_path / "latest.pt"
