@@ -106,7 +106,8 @@ class Trainer:
             self.load_checkpoint(latest)
 
     def _handle_stop_signal(self, signum, frame):
-        print(f"received signal {signal.Signals(signum).name} ({signum})", flush=True)
+        if self.is_main:
+            print(f"received signal {signal.Signals(signum).name} ({signum})", flush=True)
         self._stopped = True
 
     def _get_wandb_run_id(self):
@@ -132,15 +133,17 @@ class Trainer:
                 self.epoch = epoch
                 self.model.train()
                 model_metrics, comp_metrics = self.train_epoch()
-                print(
-                    f"epoch {epoch} | "
-                    f"peak allocated: {comp_metrics["peak_gpu_memory_gb"]} GB | "
-                    f"peak reserved: {comp_metrics["reserved_gpu_memory_gb"]} GB",
-                    flush=True
-                )
+                if self.is_main:
+                    print(
+                        f"epoch {epoch} | "
+                        f"peak allocated: {comp_metrics["peak_gpu_memory_gb"]} GB | "
+                        f"peak reserved: {comp_metrics["reserved_gpu_memory_gb"]} GB",
+                        flush=True
+                    )
                 if self._sync_stop_requested():
                     self.save_checkpoint()
-                    print(f"successful exit, total train time: {self.train_time} | {self.epoch} epochs")
+                    if self.is_main:
+                        print(f"successful exit, total train time: {self.train_time} | epoch: {self.epoch}")
                     break
                 if self.is_main:
                     wandb.log({"epoch": epoch, **comp_metrics})
