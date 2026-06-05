@@ -1,31 +1,32 @@
 #!/bin/bash
 
 #SBATCH -A m5031_g
-#SBATCH -J stft-preempt
+#SBATCH -J stft-nocat
 #SBATCH -C gpu
 #SBATCH -q preempt
-#SBATCH -t 12:00:00
-#SBATCH -N 1
-#SBATCH -n 1
-#SBATCH -c 32
-#SBATCH --gpus-per-task=1
+#SBATCH -t 24:00:00
+#SBATCH -N 4
+#SBATCH --signal=USR1@120
+#SBATCH --ntasks-per-node=4
+#SBATCH --gpus-per-node=4
+#SBATCH --cpus-per-task=32
 #SBATCH --image=nersc/pytorch:25.06.01
 #SBATCH --module=gpu,nccl-plugin
 #SBATCH --requeue
 #SBATCH --open-mode=append
-#SBATCH -L scratch
-
-#SBATCH -o ./slurm/slurm-%j.out
-#SBATCH -e ./slurm/slurm-%j.err
+#SBATCH -o ../slurm/stft-ddp-%j.out
+#SBATCH -e ../slurm/stft-ddp-%j.err
 #SBATCH --mail-type=END,FAIL,REQUEUE
 #SBATCH --mail-user=adamrupe@lbl.gov
 
-set -euo pipefail
+export OMP_NUM_THREADS=8 
+export MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)"
+export MASTER_PORT="${MASTER_PORT:-$((10000 + SLURM_JOB_ID % 50000))}"
 
-cd "${SLURM_SUBMIT_DIR}"
+# export WANDB_MODE="disabled"
 
-srun --cpu-bind=cores shifter python train.py
+srun --cpu-bind=cores shifter bash -c \
+    'unset NCCL_CROSS_NIC; exec python "$@"' bash \
+    ../train.py
 
-# Helps Slurm record PREEMPTED cleanly if the srun-launched process exits
-# after handling the preemption SIGTERM.
-sleep 120
+sleep 120 # make sure a process is still running for slurm to send SIGKILL to
