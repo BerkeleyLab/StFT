@@ -74,6 +74,9 @@ class Trainer:
         self.act = config["act"]
         self.save_path = Path(config["save_path"])
         self.save_every_n = config["save_every_n"]
+        self.validate_every_n = config["validate_every_n"]
+        if self.validate_every_n <= 0:
+            raise ValueError(f"validate_every_n must be positive, got {self.validate_every_n}")
         self.condition = config["condition_blocks"]
         self.use_snapshots = config["use_snapshots"]
         self.snapshot_length = config["snapshot_length"]
@@ -143,12 +146,13 @@ class Trainer:
                 if self._sync_stop_requested():
                     self.save_checkpoint()
                     if self.is_main:
-                        print(f"successful exit, total train time: {self.train_time} | epoch: {self.epoch}")
+                        print(
+                            f"successful exit, train time: {self.train_time} | epoch: {self.epoch}")
                     break
                 if self.is_main:
                     wandb.log({"epoch": epoch, **comp_metrics})
                 self.model.eval()
-                if epoch % 10 == 0:
+                if epoch % self.validate_every_n == 0:
                     if self.is_main:
                         self.evaluate_and_log(model_metrics)
                     barrier(self.distributed)
@@ -400,6 +404,9 @@ class Trainer:
                 "optimizer_state": self.optimizer.state_dict(),
                 "epoch": self.epoch,
                 "train_time": self.train_time,
+                "best_val": self.best_val.item(),
+                "best_test": self.best_test.item(),
+                "best_test_under_val": self.best_test_under_val.item(),
         }
         checkpoint_path = self.save_path / "latest.pt"
         if is_best:
@@ -417,8 +424,24 @@ class Trainer:
         unwrap_model(self.model).load_state_dict(checkpoint["model_state"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state"])
         self.train_time = checkpoint["train_time"]
+        self.best_val = torch.tensor(checkpoint["best_val"], dtype=torch.float32, device=self.device)
+        self.best_test = torch.tensor(checkpoint["best_test"], dtype=torch.float32, device=self.device)
+        self.best_test_under_val = torch.tensor(
+            checkpoint["best_test_under_val"],
+            dtype=torch.float32,
+            device=self.device,
+        )
         self.epoch = checkpoint["epoch"]
         self.start_epoch = self.epoch + 1
+        if self.is_main:
+            print(
+                "Loaded checkpoint "
+                f"{path} | epoch: {self.epoch} | "
+                f"best_val: {self.best_val.item()} | "
+                f"best_test_under_val: {self.best_test_under_val.item()} | "
+                f"best_test: {self.best_test.item()}",
+                flush=True,
+            )
 
     def _sync_stop_requested(self):
         stop = torch.tensor(int(self._stopped), dtype=torch.int32, device=self.device)

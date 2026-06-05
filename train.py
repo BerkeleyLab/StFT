@@ -17,6 +17,7 @@ if __name__ == "__main__":
         "act": "gelu",
         "save_path": "/pscratch/sd/a/atrupe/StFT/experiments/test",
         "save_every_n": 1,
+        "validate_every_n": 10,
         "condition_blocks": True,
         "use_snapshots": True,
         "snapshot_length": 20,
