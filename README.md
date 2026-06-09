@@ -43,17 +43,22 @@ To train StFT on the plasma MHD dataset:
 python train.py
 ```
 
-By default, the results will be saved to the ray_results at home directory. <br>
-To customize the saved directory, you can change the save_path variable in the train.py file.
+By default, the results will be saved to the **\~/ray_results** at home directory. <br>
+To customize the saved directory, you can change the **save_path** variable in the **train.py** file.
 
 ## Example Results
 
-<p align="center"> <img src="images/stft-error-vs-time.png" alt="Autoregressive error over time" width="80%"/> </p> 
-<p align="center"> Mean relative L2 error across autoregressive rollout timesteps. </p> 
-<p align="center"> <img src="images/stft-qualitative-comparison.png" alt="Qualitative comparison" width="80%"/> </p> 
-<p align="center"> Qualitative long-horizon comparison across autoregressive baselines. </p>
+<p align="center"> 
+  <img src="images/stft-error-vs-time.png" alt="Autoregressive error over time" width="80%"/><br>
+  Mean relative L2 error across autoregressive rollout timesteps. 
+</p> 
+<br>
+<p align="center"> 
+  <img src="images/stft-qualitative-comparison.png" alt="Qualitative comparison" width="80%"/><br>
+  Qualitative long-horizon comparison across autoregressive baselines. 
+</p>
 
-## Reference
+## References
 
 ```bibtex
 
