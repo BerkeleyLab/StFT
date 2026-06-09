@@ -1,15 +1,59 @@
-# StFT: Spatio-temporal-Fourier-Transformer-for-Long-term-Dynamics-Prediction
+<h1 align="center">StFT</h1>
+<h3 align="center">Spatio-temporal Fourier Transformer for Long-term Dynamics Prediction</h3>
 
+<p align="center">
+  <img src="images/stft-architecture.png" alt="StFT architecture" width="80%"/>
+  <br>
+</p>
+
+## Overview
+
+**StFT** is a multi-scale spatiotemporal forecasting model for long-horizon dynamics prediction.  
+This repository provides training code for plasma MHD data and core model components.
+
+### Repository Structure
+
+- `train.py` — training entrypoint
+- `StFT_3D.py` — StFT model definition
+- `data_utils.py` — dataset/loss/grid utilities
+- `model_utils.py` — Transformer layers and positional embeddings
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/BerkeleyLab/StFT.git
+cd StFT
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+GPU note: On CUDA systems, install a CUDA-compatible PyTorch build first using the official PyTorch instructions.
 
 ## Training StFT
 
 To train StFT on the plasma MHD dataset:
+
 ```bash
 python train.py
 ```
-By default, the results will be saved to the ray_results at home directory. To customize the saved direcotry, you can change the save_path variable in the train.py file.
 
-## References
+By default, the results will be saved to the ray_results at home directory. <br>
+To customize the saved directory, you can change the save_path variable in the train.py file.
+
+## Example Results
+
+<p align="center"> <img src="images/stft-error-vs-time.png" alt="Autoregressive error over time" width="80%"/> </p> 
+<p align="center"> Mean relative L2 error across autoregressive rollout timesteps. </p> 
+<p align="center"> <img src="images/stft-qualitative-comparison.png" alt="Qualitative comparison" width="80%"/> </p> 
+<p align="center"> Qualitative long-horizon comparison across autoregressive baselines. </p>
+
+## Reference
 
 ```bibtex
 
@@ -25,8 +69,9 @@ By default, the results will be saved to the ray_results at home directory. To c
 
 See the [LICENSE file](LICENSE) for copyright and licensing information.
 
-****************************
-*** Copyright Notice ***
+---
+
+**_ Copyright Notice _**
 
 Spatio-temporal Fourier Transformer for Long-term Dynamics Prediction (StFT) Copyright (c) 2025, The Regents of the University of California,
 through Lawrence Berkeley National Laboratory (subject to receipt of any
@@ -36,13 +81,13 @@ If you have questions about your rights to use or distribute this software,
 please contact Berkeley Lab's Intellectual Property Office at
 IPO@lbl.gov.
 
-NOTICE.  This Software was developed under funding from the U.S. Department
-of Energy and the U.S. Government consequently retains certain rights.  As
+NOTICE. This Software was developed under funding from the U.S. Department
+of Energy and the U.S. Government consequently retains certain rights. As
 such, the U.S. Government has been granted for itself and others acting on
 its behalf a paid-up, nonexclusive, irrevocable, worldwide license in the
-Software to reproduce, distribute copies to the public, prepare derivative 
+Software to reproduce, distribute copies to the public, prepare derivative
 works, and perform publicly and display publicly, and to permit others to do so.
 
 Questions? Contact Zhe Bai (zhebai@lbl.gov)
-****************************
 
+---
