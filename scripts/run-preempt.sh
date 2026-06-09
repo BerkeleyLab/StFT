@@ -6,7 +6,7 @@
 #SBATCH -q preempt
 #SBATCH -t 24:00:00
 #SBATCH -N 4
-#SBATCH --signal=USR1@120
+#SBATCH --signal=USR1@360
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=32
