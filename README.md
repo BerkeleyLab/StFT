@@ -2,7 +2,7 @@
 <h3 align="center">Spatio-temporal Fourier Transformer for Long-term Dynamics Prediction</h3>
 
 <p align="center">
-  <img src="images/stft-architecture.png" alt="StFT architecture" width="80%"/>
+  <img src="figs/stft-architecture.png" alt="StFT architecture" width="80%"/>
   <br>
 </p>
 
