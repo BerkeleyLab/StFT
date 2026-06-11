@@ -49,12 +49,12 @@ To customize the saved directory, you can change the **save_path** variable in t
 ## Example Results
 
 <p align="center"> 
-  <img src="images/stft-error-vs-time.png" alt="Autoregressive error over time" width="80%"/><br>
+  <img src="figs/stft-error-vs-time.png" alt="Autoregressive error over time" width="80%"/><br>
   Mean relative L2 error across autoregressive rollout timesteps. 
 </p> 
 <br>
 <p align="center"> 
-  <img src="images/stft-qualitative-comparison.png" alt="Qualitative comparison" width="80%"/><br>
+  <img src="figs/stft-qualitative-comparison.png" alt="Qualitative comparison" width="80%"/><br>
   Qualitative long-horizon comparison across autoregressive baselines. 
 </p>
 
