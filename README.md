@@ -55,7 +55,7 @@ To customize the saved directory, you can change the **save_path** variable in t
 <br>
 <p align="center"> 
   <img src="figs/stft-qualitative-comparison.png" alt="Qualitative comparison" width="80%"/><br>
-  Qualitative long-horizon comparison across autoregressive baselines. 
+  Qualitative long-horizon error comparison across autoregressive baselines. 
 </p>
 
 ## References
@@ -76,7 +76,7 @@ See the [LICENSE file](LICENSE) for copyright and licensing information.
 
 ---
 
-**_ Copyright Notice _**
+**- Copyright Notice -**
 
 Spatio-temporal Fourier Transformer for Long-term Dynamics Prediction (StFT) Copyright (c) 2025, The Regents of the University of California,
 through Lawrence Berkeley National Laboratory (subject to receipt of any
