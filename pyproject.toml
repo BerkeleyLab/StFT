@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stft-transformer"
+version = "0.1.0"
+description = "Spatial-temporal Fourier Transformer"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy",
+  "torch",
+  "einops",
+  "ray[train]",
+]
+
+[tool.setuptools]
+packages = ["stft"]
