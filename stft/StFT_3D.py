@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from model_utils import TransformerLayer, get_2d_sincos_pos_embed
+from .model_utils import TransformerLayer, get_2d_sincos_pos_embed
 
 
 class StFTBlcok(nn.Module):
