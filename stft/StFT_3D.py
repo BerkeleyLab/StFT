@@ -5,7 +5,7 @@ from einops import rearrange
 from .model_utils import TransformerLayer, get_2d_sincos_pos_embed
 
 
-class StFTBlcok(nn.Module):
+class StFTBlock(nn.Module):
     def __init__(
         self,
         cond_time,
@@ -24,7 +24,7 @@ class StFTBlcok(nn.Module):
         grid_size=(4, 4),
         layer_indx=0,
     ):
-        super(StFTBlcok, self).__init__()
+        super(StFTBlock, self).__init__()
         self.layer_indx = layer_indx
         self.cond_time = cond_time
         self.freq_in_channels = freq_in_channels
@@ -172,7 +172,7 @@ class StFT(nn.Module):
             num_patches = num_patches_h * num_patches_w
             if depth == 0:
                 blocks.append(
-                    StFTBlcok(
+                    StFTBlock(
                         cond_time,
                         num_vars,
                         p1 * p2 * in_channels,
@@ -192,7 +192,7 @@ class StFT(nn.Module):
                 )
             else:
                 blocks.append(
-                    StFTBlcok(
+                    StFTBlock(
                         cond_time,
                         num_vars,
                         p1 * p2 * (in_channels + out_channels),
