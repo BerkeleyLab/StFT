@@ -49,7 +49,7 @@ To customize the saved directory, you can change the **save_path** variable in t
 ## Example Results
 
 <p align="center"> 
-  <img src="https://github.com/BerkeleyLab/StFT/blob/main/figs/stft-error-vs-time.png" alt="Autoregressive error over time" width="80%"/><br>
+  <img src="https://raw.githubusercontent.com/BerkeleyLab/StFT/main/figs/stft-error-vs-time.png" alt="Autoregressive error over time" width="80%"/><br>
   Mean relative L2 error across autoregressive rollout timesteps. 
 </p> 
 <br>
