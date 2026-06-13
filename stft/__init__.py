@@ -3,7 +3,7 @@ from . import data_utils
 from . import model_utils
 __all__ = [
     'StFTBlock', 
-    'StFT'
+    'StFT',
     'data_utils',
     'model_utils',
 ]
