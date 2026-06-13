@@ -2,7 +2,7 @@
 <h3 align="center">Spatio-temporal Fourier Transformer for Long-term Dynamics Prediction</h3>
 
 <p align="center">
-  <img src="https://github.com/BerkeleyLab/StFT/blob/main/figs/stft-architecture.png" alt="StFT architecture" width="80%"/>
+  <img src="https://raw.githubusercontent.com/BerkeleyLab/StFT/main/figs/stft-architecture.png" alt="Spatio-temporal Fourier Transformer architecture" width="80%"/>
   <br>
 </p>
 
@@ -54,7 +54,7 @@ To customize the saved directory, you can change the **save_path** variable in t
 </p> 
 <br>
 <p align="center"> 
-  <img src="https://github.com/BerkeleyLab/StFT/blob/main/figs/stft-qualitative-comparison.png" alt="Qualitative comparison" width="80%"/><br>
+  <img src="https://raw.githubusercontent.com/BerkeleyLab/StFT/main/figs/stft-qualitative-comparison.png" alt="Qualitative comparison" width="80%"/><br>
   Qualitative long-horizon error comparison across autoregressive baselines. 
 </p>
 
