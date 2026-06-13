@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stft-transformer"
-version = "0.1.1"
+version = "0.1.5"
 description = "Spatial-temporal Fourier Transformer"
 readme = "README.md"
 requires-python = ">=3.9"
