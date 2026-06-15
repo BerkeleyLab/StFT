@@ -27,7 +27,7 @@ B             = 2                          # batch size
 SEED          = 42
 
 
-def make_model(seed: int = SEED) -> StFT:
+def make_model(seed: int = SEED, condition_blocks: bool = True) -> StFT:
     torch.manual_seed(seed)
     return StFT(
         cond_time=COND_TIME,
@@ -43,6 +43,7 @@ def make_model(seed: int = SEED) -> StFT:
         vit_depth=VIT_DEPTH,
         num_heads=NUM_HEADS,
         mlp_dim=MLP_DIM,
+        condition_blocks=condition_blocks,
     ).eval()
 
 
@@ -60,8 +61,9 @@ def make_inputs(seed: int = SEED) -> tuple:
 # 1. Output structure tests
 # ---------------------------------------------------------------------------
 
-def test_output_structure():
-    model = make_model()
+@pytest.mark.parametrize("condition_blocks", [True, False])
+def test_output_structure(condition_blocks):
+    model = make_model(condition_blocks=condition_blocks)
     x, grid = make_inputs()
     with torch.no_grad():
         outputs = model(x, grid)
@@ -80,8 +82,9 @@ def test_output_structure():
 # 2. Forward determinism tests
 # ---------------------------------------------------------------------------
 
-def test_forward_determinism():
-    model = make_model()
+@pytest.mark.parametrize("condition_blocks", [True, False])
+def test_forward_determinism(condition_blocks):
+    model = make_model(condition_blocks=condition_blocks)
     x, grid = make_inputs()
     with torch.no_grad():
         out1 = model(x, grid)
@@ -98,8 +101,9 @@ def test_forward_determinism():
 # 3. Gradient flow tests
 # ---------------------------------------------------------------------------
 
-def test_gradient_flow():
-    model = make_model().train()
+@pytest.mark.parametrize("condition_blocks", [True, False])
+def test_gradient_flow(condition_blocks):
+    model = make_model(condition_blocks=condition_blocks).train()
     x, grid = make_inputs()
     x = x.requires_grad_(True)
 
@@ -126,9 +130,10 @@ def test_gradient_flow():
 # 4. Batch independence tests
 # ---------------------------------------------------------------------------
 
-def test_batch_independence():
+@pytest.mark.parametrize("condition_blocks", [True, False])
+def test_batch_independence(condition_blocks):
     """Per-sample outputs must not depend on other samples in the batch."""
-    model = make_model()
+    model = make_model(condition_blocks=condition_blocks)
     x, grid = make_inputs()  # shape (B, COND_TIME, NUM_IN_STATES, H, W), B=2
 
     with torch.no_grad():
@@ -149,6 +154,7 @@ def test_batch_independence():
 # 5. Non-square patches and asymmetric overlap variants
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("condition_blocks", [True, False])
 @pytest.mark.parametrize("patch_sizes,overlaps,modes", [
     pytest.param(
         ((8, 4), (4, 2)), ((1, 1), (1, 1)), ((3, 2), (2, 1)),
@@ -163,7 +169,7 @@ def test_batch_independence():
         id="non-square-and-asymmetric",
     ),
 ])
-def test_output_shape_variants(patch_sizes, overlaps, modes):
+def test_output_shape_variants(patch_sizes, overlaps, modes, condition_blocks):
     torch.manual_seed(SEED)
     model = StFT(
         cond_time=COND_TIME,
@@ -179,6 +185,7 @@ def test_output_shape_variants(patch_sizes, overlaps, modes):
         vit_depth=VIT_DEPTH,
         num_heads=NUM_HEADS,
         mlp_dim=MLP_DIM,
+        condition_blocks=condition_blocks,
     ).eval()
     x, grid = make_inputs()
     with torch.no_grad():

@@ -244,7 +244,9 @@ class StFT(nn.Module):
             num_patches_h = (H + pad_h - p1) // step_h + 1
             num_patches_w = (W + pad_w - p2) // step_w + 1
 
-            in_dim = p1 * p2 * (in_channels if depth == 0 else in_channels + out_channels)
+            layer_indx = 1 if condition_blocks and depth != 0 else 0
+            extra_channels = out_channels if layer_indx else 0
+            in_dim = p1 * p2 * (in_channels + extra_channels)
             blocks.append(
                 StFTBlock(
                     cond_time,
@@ -260,7 +262,7 @@ class StFT(nn.Module):
                     mlp_dim=mlp_dim,
                     act=act,
                     grid_size=(num_patches_h, num_patches_w),
-                    layer_indx=min(depth, 1),
+                    layer_indx=layer_indx,
                 )
             )
         self.blocks = nn.ModuleList(blocks)
