@@ -14,8 +14,8 @@
 #SBATCH --module=gpu,nccl-plugin
 #SBATCH --requeue
 #SBATCH --open-mode=append
-#SBATCH -o ../slurm/stft-ddp-%j.out
-#SBATCH -e ../slurm/stft-ddp-%j.err
+#SBATCH -o /pscratch/sd/a/atrupe/StFT/slurm/stft-ddp-%j.out
+#SBATCH -e /pscratch/sd/a/atrupe/StFT/slurm/stft-ddp-%j.err
 #SBATCH --mail-type=END,FAIL,REQUEUE
 #SBATCH --mail-user=adamrupe@lbl.gov
 
@@ -27,7 +27,7 @@ export MASTER_PORT="${MASTER_PORT:-$((10000 + SLURM_JOB_ID % 50000))}"
 
 srun --cpu-bind=cores shifter bash -c \
     'unset NCCL_CROSS_NIC; exec python "$@"' bash \
-    ../train.py
+    /pscratch/sd/a/atrupe/StFT/train.py
 
 status=$?
 if [ "$status" -ne 0 ]; then
