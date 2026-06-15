@@ -29,4 +29,9 @@ srun --cpu-bind=cores shifter bash -c \
     'unset NCCL_CROSS_NIC; exec python "$@"' bash \
     ../train.py
 
+status=$?
+if [ "$status" -ne 0 ]; then
+    exit "$status"
+fi
+
 sleep 120 # make sure a process is still running for slurm to send SIGKILL to
