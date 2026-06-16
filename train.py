@@ -1,26 +1,15 @@
+import hydra
+
+from stft.config import to_plain_config
 from trainer import Trainer
 
-if __name__ == "__main__":
-    config = {
-        "dataset": "/pscratch/sd/a/atrupe/StFT/data/shallow-water",
-        "patch_sizes": ((128, 128), (64, 64), (32, 32)),
-        "overlaps": ((1, 1), (1, 1), (1, 1)),
-        "vit_depth": (6, 6, 6),
-        "modes": ((8, 8), (8, 8), (8, 8)),
-        "dim": 512,
-        "num_heads": 1,
-        "lr": 1e-4,
-        "max_epochs": 10_000,
-        "batchsize": 16,
-        "cond_time": 5,
-        "lift_channel": 64,
-        "act": "gelu",
-        "save_path": "/pscratch/sd/a/atrupe/StFT/experiments/run_2",
-        "save_every_n": 5,
-        "validate_every_n": 10,
-        "condition_blocks": False,
-        "use_snapshots": True,
-        "snapshot_length": 20,
-    }
+
+@hydra.main(version_base=None, config_path="configs", config_name="run_2")
+def main(cfg):
+    config = to_plain_config(cfg)
     trainer = Trainer(config)
     trainer.run()
+
+
+if __name__ == "__main__":
+    main()

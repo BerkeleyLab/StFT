@@ -48,7 +48,7 @@ def normalize_slurm_environment() -> None:
             slurm_localid = int(os.environ.get("SLURM_LOCALID", rank))
             os.environ["LOCAL_RANK"] = str(slurm_localid % visible_count)
         else:
-            os.environ["LOCAL_RANK"] = "0"
+            os.environ["LOCAL_RANK"] = os.environ.get("SLURM_LOCALID", str(rank))
 
 
 def distributed_launch_detected() -> bool:

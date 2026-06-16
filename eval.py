@@ -1,8 +1,10 @@
+import argparse
 from pathlib import Path
 
 import numpy as np
 import torch
 
+from stft.config import load_run_config, resolve_run_dir
 from stft.distributed import cleanup_distributed, unwrap_model
 from trainer import Trainer
 
@@ -34,35 +36,40 @@ def rollout(trainer, batch):
     return torch.stack(preds, dim=1), torch.stack(targets, dim=1)
 
 
-if __name__ == "__main__":
-    config = {
-        "dataset": "/pscratch/sd/a/atrupe/StFT/data/shallow-water",
-        "patch_sizes": ((128, 128), (64, 64), (32, 32)),
-        "overlaps": ((1, 1), (1, 1), (1, 1)),
-        "vit_depth": (6, 6, 6),
-        "modes": ((8, 8), (8, 8), (8, 8)),
-        "dim": 512,
-        "num_heads": 1,
-        "lr": 1e-4,
-        "max_epochs": 10_000,
-        "batchsize": 16,
-        "cond_time": 5,
-        "lift_channel": 64,
-        "act": "gelu",
-        "save_path": "/pscratch/sd/a/atrupe/StFT/experiments/run_2",
-        "save_every_n": 5,
-        "validate_every_n": 10,
-        "condition_blocks": False,
-        "use_snapshots": True,
-        "snapshot_length": 20,
-    }
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run validation rollout for a saved StFT run.")
+    parser.add_argument("--run", default="2", help="Run number or run_<number> directory name.")
+    parser.add_argument("--run-dir", default=None, help="Explicit experiment run directory.")
+    parser.add_argument(
+        "--experiments-dir",
+        default="experiments",
+        help="Parent directory used with --run.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        choices=("latest", "best"),
+        default="latest",
+        help="Checkpoint basename to load.",
+    )
+    return parser.parse_args()
 
-    trainer = Trainer(config)
+
+if __name__ == "__main__":
+    args = parse_args()
+    run_dir = resolve_run_dir(
+        run=args.run,
+        run_dir=args.run_dir,
+        experiments_dir=args.experiments_dir,
+    )
+    config = load_run_config(run_dir=run_dir)
+
+    trainer = Trainer(config, persist_config=False)
     try:
         trainer.setup()
-        checkpoint_path = Path(config["save_path"]) / "latest.pt"
+        checkpoint_path = Path(config["save_path"]) / f"{args.checkpoint}.pt"
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Missing checkpoint: {checkpoint_path}")
+        trainer.load_checkpoint(checkpoint_path)
 
         trainer.model.eval()
         batch = next(iter(trainer.val_loader))
@@ -72,7 +79,7 @@ if __name__ == "__main__":
         ).cpu()
         rel_l2 = torch.linalg.vector_norm(preds - targets) / torch.linalg.vector_norm(targets)
 
-        output_path = Path(config["save_path"]) / "val_rollout_latest.npz"
+        output_path = Path(config["save_path"]) / f"val_rollout_{args.checkpoint}.npz"
         np.savez(
             output_path,
             context=context.numpy(),

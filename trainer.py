@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import signal
 import time
 import numpy as np
@@ -9,6 +10,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader, DistributedSampler
 
 from stft import StFT, get_grid, TrainingDataset, SnapshotDataset, RolloutDataset, load_dataset
+from stft.config import save_run_config, to_plain_config, validate_resume_config
 from stft.distributed import (
     barrier,
     cleanup_distributed,
@@ -50,8 +52,10 @@ class LpLoss(object):
         return self.rel(x, y)
 
 class Trainer:
-    def __init__(self, config):
-        self.config = config
+    def __init__(self, config, persist_config=True):
+        self.config = to_plain_config(config)
+        config = self.config
+        self.persist_config = persist_config
         self.patch_sizes = config["patch_sizes"]
         self.overlaps = config["overlaps"]
         self.vit_depth = config["vit_depth"]
@@ -90,6 +94,7 @@ class Trainer:
         self.train_time = 0.0
         self._stopped = False
         self._wandb_run = None
+        self.wandb_run_id = None
 
     def setup(self):
         self.device, self.local_rank, self.rank, self.world_size = setup_distributed()
@@ -100,7 +105,10 @@ class Trainer:
         signal.signal(signal.SIGUSR1, self._handle_stop_signal)
 
         if self.is_main:
-            self.save_path.mkdir(parents=True, exist_ok=True)
+            if self.persist_config:
+                save_run_config(self.config, self.save_path)
+            else:
+                self.save_path.mkdir(parents=True, exist_ok=True)
         barrier(self.distributed)
         self.load_data()
         self.build_model()
@@ -126,6 +134,7 @@ class Trainer:
             self.setup()
             if self.is_main:
                 run_id = self._get_wandb_run_id()
+                self.wandb_run_id = run_id
                 self._wandb_run = wandb.init(
                     project="stft",
                     config=self.config,
@@ -137,10 +146,12 @@ class Trainer:
                 self.model.train()
                 model_metrics, comp_metrics = self.train_epoch()
                 if self.is_main:
+                    peak_allocated = comp_metrics.get("peak_gpu_memory_gb", "n/a")
+                    peak_reserved = comp_metrics.get("reserved_gpu_memory_gb", "n/a")
                     print(
                         f"epoch {epoch} | "
-                        f"peak allocated: {comp_metrics["peak_gpu_memory_gb"]} GB | "
-                        f"peak reserved: {comp_metrics["reserved_gpu_memory_gb"]} GB",
+                        f"peak allocated: {peak_allocated} GB | "
+                        f"peak reserved: {peak_reserved} GB",
                         flush=True
                     )
                 if self._sync_stop_requested():
@@ -151,6 +162,15 @@ class Trainer:
                     break
                 if self.is_main:
                     wandb.log({"epoch": epoch, **comp_metrics})
+                    self.log_local_metrics({
+                        "event": "train",
+                        "epoch": epoch,
+                        "train_l2": model_metrics["train_l2"].item(),
+                        "level_losses": [
+                            value.item() for value in model_metrics["level_losses"]
+                        ],
+                        **comp_metrics,
+                    })
                 self.model.eval()
                 if epoch % self.validate_every_n == 0:
                     if self.is_main:
@@ -391,6 +411,8 @@ class Trainer:
         for level in range(self.num_levels):
             metrics[f"level_{level}_loss"] = model_metrics["level_losses"][level].item()
         wandb.log(metrics)
+        self.log_local_metrics({"event": "eval", **metrics})
+        self.write_summary()
         if improved_val:
             self.save_checkpoint(is_best=True, sync=False)
 
@@ -407,6 +429,7 @@ class Trainer:
                 "best_val": self.best_val.item(),
                 "best_test": self.best_test.item(),
                 "best_test_under_val": self.best_test_under_val.item(),
+                "config": self.config,
         }
         checkpoint_path = self.save_path / "latest.pt"
         if is_best:
@@ -421,6 +444,8 @@ class Trainer:
 
     def load_checkpoint(self, path):
         checkpoint = torch.load(path, map_location=self.device)
+        if "config" in checkpoint:
+            validate_resume_config(checkpoint["config"], self.config)
         unwrap_model(self.model).load_state_dict(checkpoint["model_state"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state"])
         self.train_time = checkpoint["train_time"]
@@ -450,6 +475,42 @@ class Trainer:
 
     def unnorm_data(self, data, B, C, H, W):
         return data.detach().clone().reshape(B, C, H, W).unsqueeze(1) * self.train_std + self.train_mean
+
+    def log_local_metrics(self, metrics):
+        if not self.is_main:
+            return
+        metrics_path = self.save_path / "metrics.jsonl"
+        with metrics_path.open("a") as handle:
+            handle.write(json.dumps(self._jsonable(metrics), sort_keys=True) + "\n")
+
+    def write_summary(self):
+        if not self.is_main:
+            return
+        summary = {
+            "epoch": self.epoch,
+            "train_time": self.train_time,
+            "best_val": self.best_val.item(),
+            "best_test": self.best_test.item(),
+            "best_test_under_val": self.best_test_under_val.item(),
+            "wandb_run_id": self.wandb_run_id,
+        }
+        summary_path = self.save_path / "summary.json"
+        tmp_path = summary_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(self._jsonable(summary), indent=2, sort_keys=True))
+        tmp_path.replace(summary_path)
+
+    def _jsonable(self, value):
+        if isinstance(value, torch.Tensor):
+            return value.item() if value.ndim == 0 else value.detach().cpu().tolist()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, dict):
+            return {key: self._jsonable(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._jsonable(item) for item in value]
+        if isinstance(value, Path):
+            return str(value)
+        return value
     
     def run_test(self, n_epochs, warmup_steps, measure_steps, dim_test, B, C, H, W):
         self.warmup_steps = warmup_steps
