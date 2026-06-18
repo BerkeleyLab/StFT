@@ -21,6 +21,7 @@ from stft.distributed import (
     setup_distributed,
     unwrap_model,
 )
+from stft.launch_metadata import write_launch_metadata
 
 class LpLoss(object):
     def __init__(self, p=2, size_average=True, reduction=True):
@@ -128,7 +129,30 @@ class Trainer:
         run_id = wandb.util.generate_id()
         run_id_file.write_text(run_id)
         return run_id
-        
+
+    def record_launch_metadata(self):
+        if not self.is_main:
+            return
+        launch_path, metadata = write_launch_metadata(
+            self.save_path,
+            device=self.device,
+            local_rank=self.local_rank,
+            rank=self.rank,
+            world_size=self.world_size,
+            start_epoch=self.start_epoch,
+            resume_from_checkpoint=self.start_epoch > 0,
+        )
+        wandb.save(str(launch_path), base_path=str(self.save_path))
+        wandb.summary["latest_launch/job_id"] = metadata["slurm"]["job_id"] or "local"
+        wandb.summary["latest_launch/nnodes"] = (
+            metadata["slurm"]["nnodes"] or metadata["slurm"]["job_num_nodes"]
+        )
+        wandb.summary["latest_launch/world_size"] = metadata["torch_distributed"]["world_size"]
+        wandb.summary["latest_launch/gpus_per_node"] = (
+            metadata["slurm"]["gpus_per_node"] or metadata["runtime"]["cuda_device_count"]
+        )
+        print(f"Saved launch metadata to {launch_path}", flush=True)
+
     def run(self):
         try:
             self.setup()
@@ -141,6 +165,7 @@ class Trainer:
                     id=run_id,
                     resume="allow",
                 )
+                self.record_launch_metadata()
             for epoch in range(self.start_epoch, self.max_epochs):
                 self.epoch = epoch
                 self.model.train()
