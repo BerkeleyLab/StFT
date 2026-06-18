@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH -A m5031_g
-#SBATCH -J stft-cat
+#SBATCH -J stft
 #SBATCH -C gpu
 #SBATCH -q regular
 #SBATCH -t 24:00:00
@@ -12,8 +12,6 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --image=nersc/pytorch:25.06.01
 #SBATCH --module=gpu,nccl-plugin
-#SBATCH --requeue
-#SBATCH --open-mode=append
 #SBATCH -o /pscratch/sd/a/atrupe/StFT/slurm/stft-ddp-%j.out
 #SBATCH -e /pscratch/sd/a/atrupe/StFT/slurm/stft-ddp-%j.err
 #SBATCH --mail-type=END,FAIL,REQUEUE
@@ -28,5 +26,3 @@ export MASTER_PORT="${MASTER_PORT:-$((10000 + SLURM_JOB_ID % 50000))}"
 srun --cpu-bind=cores shifter bash -c \
     'unset NCCL_CROSS_NIC; exec python "$@"' bash \
     /pscratch/sd/a/atrupe/StFT/train.py
-
-sleep 120 # make sure a process is still running for slurm to send SIGKILL to
