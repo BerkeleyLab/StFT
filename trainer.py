@@ -123,12 +123,41 @@ class Trainer:
         self._stopped = True
 
     def _get_wandb_run_id(self):
-        run_id_file = self.save_path / "wandb_run_id.txt"
-        if run_id_file.exists():
-            return run_id_file.read_text().strip()
+        run_file = self.save_path / "wandb_run.json"
+        if run_file.exists():
+            metadata = json.loads(run_file.read_text())
+            run_id = metadata.get("id")
+            if not run_id:
+                raise ValueError(f"Missing W&B run id in {run_file}")
+            return run_id
+
+        legacy_run_id_file = self.save_path / "wandb_run_id.txt"
+        if legacy_run_id_file.exists():
+            run_id = legacy_run_id_file.read_text().strip()
+            self._write_wandb_run_metadata({"id": run_id, "name": None, "url": None})
+            legacy_run_id_file.unlink()
+            return run_id
+
         run_id = wandb.util.generate_id()
-        run_id_file.write_text(run_id)
+        self._write_wandb_run_metadata({"id": run_id, "name": None, "url": None})
         return run_id
+
+    def _write_wandb_run_metadata(self, metadata):
+        run_file = self.save_path / "wandb_run.json"
+        tmp_file = run_file.with_suffix(".json.tmp")
+        tmp_file.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+        tmp_file.replace(run_file)
+
+    def _save_wandb_run_metadata(self):
+        if self._wandb_run is None:
+            return
+        self._write_wandb_run_metadata(
+            {
+                "id": self._wandb_run.id,
+                "name": self._wandb_run.name,
+                "url": self._wandb_run.url,
+            }
+        )
 
     def record_launch_metadata(self):
         if not self.is_main:
@@ -165,6 +194,7 @@ class Trainer:
                     id=run_id,
                     resume="allow",
                 )
+                self._save_wandb_run_metadata()
                 self.record_launch_metadata()
             for epoch in range(self.start_epoch, self.max_epochs):
                 self.epoch = epoch

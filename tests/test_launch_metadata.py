@@ -148,3 +148,73 @@ def test_trainer_records_launch_metadata_to_wandb_summary(tmp_path, monkeypatch)
     assert summary["latest_launch/nnodes"] == "2"
     assert summary["latest_launch/world_size"] == 8
     assert summary["latest_launch/gpus_per_node"] == "4"
+
+
+def test_trainer_reads_wandb_run_id_from_json(tmp_path):
+    run_file = tmp_path / "wandb_run.json"
+    run_file.write_text(
+        json.dumps(
+            {
+                "id": "abc123",
+                "name": "robust-dew-6",
+                "url": "https://wandb.ai/entity/stft/runs/abc123",
+            }
+        )
+    )
+
+    trainer = Trainer.__new__(Trainer)
+    trainer.save_path = tmp_path
+
+    assert trainer._get_wandb_run_id() == "abc123"
+
+
+def test_trainer_creates_wandb_run_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(trainer_module.wandb.util, "generate_id", lambda: "new123")
+
+    trainer = Trainer.__new__(Trainer)
+    trainer.save_path = tmp_path
+
+    assert trainer._get_wandb_run_id() == "new123"
+    assert json.loads((tmp_path / "wandb_run.json").read_text()) == {
+        "id": "new123",
+        "name": None,
+        "url": None,
+    }
+
+
+def test_trainer_migrates_legacy_wandb_run_id_file(tmp_path):
+    legacy_file = tmp_path / "wandb_run_id.txt"
+    legacy_file.write_text("legacy123\n")
+
+    trainer = Trainer.__new__(Trainer)
+    trainer.save_path = tmp_path
+
+    assert trainer._get_wandb_run_id() == "legacy123"
+    assert not legacy_file.exists()
+    assert json.loads((tmp_path / "wandb_run.json").read_text()) == {
+        "id": "legacy123",
+        "name": None,
+        "url": None,
+    }
+
+
+def test_trainer_saves_wandb_run_name_and_url(tmp_path):
+    trainer = Trainer.__new__(Trainer)
+    trainer.save_path = tmp_path
+    trainer._wandb_run = type(
+        "FakeWandbRun",
+        (),
+        {
+            "id": "abc123",
+            "name": "robust-dew-6",
+            "url": "https://wandb.ai/entity/stft/runs/abc123",
+        },
+    )()
+
+    trainer._save_wandb_run_metadata()
+
+    assert json.loads((tmp_path / "wandb_run.json").read_text()) == {
+        "id": "abc123",
+        "name": "robust-dew-6",
+        "url": "https://wandb.ai/entity/stft/runs/abc123",
+    }
