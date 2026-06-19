@@ -25,4 +25,4 @@ export MASTER_PORT="${MASTER_PORT:-$((10000 + SLURM_JOB_ID % 50000))}"
 
 srun --cpu-bind=cores shifter bash -c \
     'unset NCCL_CROSS_NIC; exec python "$@"' bash \
-    /pscratch/sd/a/atrupe/StFT/train.py
+    /pscratch/sd/a/atrupe/StFT/train.py --config-name legacy

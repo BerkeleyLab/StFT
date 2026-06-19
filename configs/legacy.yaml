@@ -1,0 +1,48 @@
+model_type: legacy_2d
+
+dataset: /pscratch/sd/a/atrupe/StFT/data/shallow-water
+
+patch_sizes:
+  - [128, 128]
+  - [64, 64]
+  - [32, 32]
+overlaps:
+  - [1, 1]
+  - [1, 1]
+  - [1, 1]
+
+# Kept per-level for Trainer compatibility.
+vit_depth: [6, 6, 6]
+modes:
+  - [8, 8]
+  - [8, 8]
+  - [8, 8]
+
+# Scalar settings consumed by SWE.sw_2d.HierARRM.
+legacy:
+  vit_depth: 6
+  modes: 8
+
+dim: 512
+num_heads: 1
+lr: 1.0e-4
+max_epochs: 10000
+batchsize: 20
+cond_time: 5
+lift_channel: 64
+act: relu
+
+save_path: /pscratch/sd/a/atrupe/StFT/experiments/legacy
+save_every_n: 5
+validate_every_n: 10
+
+condition_blocks: true
+use_snapshots: true
+snapshot_length: 20
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false

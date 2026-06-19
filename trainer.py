@@ -22,6 +22,7 @@ from stft.distributed import (
     unwrap_model,
 )
 from stft.launch_metadata import write_launch_metadata
+from stft.legacy import LegacyStFTAdapter, build_legacy_hierarrm
 
 class LpLoss(object):
     def __init__(self, p=2, size_average=True, reduction=True):
@@ -57,6 +58,8 @@ class Trainer:
         self.config = to_plain_config(config)
         config = self.config
         self.persist_config = persist_config
+        self.model_type = config.get("model_type", "stft_3d")
+        self.legacy_config = config.get("legacy", {})
         self.patch_sizes = config["patch_sizes"]
         self.overlaps = config["overlaps"]
         self.vit_depth = config["vit_depth"]
@@ -283,26 +286,9 @@ class Trainer:
         )
 
     def build_model(self):
-        in_channels = (2 + self.num_in_states) * self.cond_time
         self.grid = get_grid(self.img_size[0], self.img_size[1]).to(self.device)
         self.myloss = LpLoss(size_average=False)
-        raw_model = StFT(
-            self.cond_time,
-            self.num_in_states + 2,
-            self.patch_sizes,
-            self.overlaps,
-            in_channels,
-            self.num_in_states,
-            self.modes,
-            img_size=self.img_size,
-            lift_channel=self.lift_channel,
-            dim=self.dim,
-            vit_depth=self.vit_depth,
-            num_heads=self.num_heads,
-            mlp_dim=self.dim,
-            act=self.act,
-            condition_blocks=self.condition
-        ).to(self.device)
+        raw_model = self._build_raw_model(dim=self.dim).to(self.device)
         self.optimizer = torch.optim.AdamW(raw_model.parameters(), lr=self.lr)
         if self.distributed:
             if self.device.type == "cuda":
@@ -318,6 +304,64 @@ class Trainer:
         self.best_val = torch.tensor(1e10, dtype=torch.float32, device=self.device)
         self.best_test = torch.tensor(1e10, dtype=torch.float32, device=self.device)
         self.best_test_under_val = torch.tensor(1e10, dtype=torch.float32, device=self.device)
+
+    def _build_raw_model(self, dim):
+        if self.model_type == "stft_3d":
+            return self.build_stft_model(dim=dim)
+        if self.model_type == "legacy_2d":
+            return self.build_legacy_model(dim=dim)
+        raise ValueError(f"Unknown model_type {self.model_type!r}")
+
+    def build_stft_model(self, dim=None):
+        dim = self.dim if dim is None else dim
+        in_channels = (2 + self.num_in_states) * self.cond_time
+        return StFT(
+            self.cond_time,
+            self.num_in_states + 2,
+            self.patch_sizes,
+            self.overlaps,
+            in_channels,
+            self.num_in_states,
+            self.modes,
+            img_size=self.img_size,
+            lift_channel=self.lift_channel,
+            dim=dim,
+            vit_depth=self.vit_depth,
+            num_heads=self.num_heads,
+            mlp_dim=dim,
+            act=self.act,
+            condition_blocks=self.condition
+        )
+
+    def build_legacy_model(self, dim=None):
+        if not self.condition:
+            raise ValueError("legacy_2d requires condition_blocks: true")
+        dim = self.dim if dim is None else dim
+        legacy_modes = self.legacy_config.get("modes", self._first_scalar(self.modes))
+        legacy_vit_depth = self.legacy_config.get(
+            "vit_depth",
+            self._first_scalar(self.vit_depth),
+        )
+        legacy_in_channels = self.num_in_states * self.cond_time + 2
+        legacy_model = build_legacy_hierarrm(
+            self.patch_sizes,
+            self.overlaps,
+            legacy_in_channels,
+            self.num_in_states,
+            img_size=self.img_size,
+            dim=dim,
+            vit_depth=legacy_vit_depth,
+            modes=legacy_modes,
+            num_heads=self.num_heads,
+            mlp_dim=dim,
+        )
+        return LegacyStFTAdapter(legacy_model)
+
+    @staticmethod
+    def _first_scalar(value):
+        while isinstance(value, (list, tuple)):
+            value = value[0]
+        return value
 
     def train_epoch(self):
         if self.train_sampler is not None:
@@ -596,26 +640,9 @@ class Trainer:
         self.is_main = True
         self.num_in_states = self.C
         self.img_size = (self.H, self.W)
-        in_channels = (2 + self.num_in_states) * self.cond_time
         self.grid = get_grid(self.img_size[0], self.img_size[1]).to(self.device)
         self.myloss = LpLoss(size_average=False)
-        self.model = StFT(
-            self.cond_time,
-            self.num_in_states + 2,
-            self.patch_sizes,
-            self.overlaps,
-            in_channels,
-            self.num_in_states,
-            self.modes,
-            img_size=self.img_size,
-            lift_channel=self.lift_channel,
-            dim=self.dim_test,
-            vit_depth=self.vit_depth,
-            num_heads=self.num_heads,
-            mlp_dim=self.dim_test,
-            act=self.act,
-            condition_blocks=self.condition
-        ).to(self.device)
+        self.model = self._build_raw_model(dim=self.dim_test).to(self.device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
         print(
             f"batch_size: {self.B} | "

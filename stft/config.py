@@ -7,6 +7,8 @@ from omegaconf import DictConfig, OmegaConf
 
 
 IMMUTABLE_CONFIG_KEYS = (
+    "model_type",
+    "legacy",
     "dataset",
     "patch_sizes",
     "overlaps",
