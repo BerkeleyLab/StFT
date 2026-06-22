@@ -1,10 +1,10 @@
 #!/bin/bash
 
 #SBATCH -A m5031_g
-#SBATCH -J stft
+#SBATCH -J stft-legacy
 #SBATCH -C gpu
 #SBATCH -q regular
-#SBATCH -t 24:00:00
+#SBATCH -t 4:00:00
 #SBATCH -N 4
 #SBATCH --signal=USR1@360
 #SBATCH --ntasks-per-node=4
