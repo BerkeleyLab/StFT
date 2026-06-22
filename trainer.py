@@ -9,7 +9,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader, DistributedSampler
 
-from stft import StFT, get_grid, TrainingDataset, SnapshotDataset, RolloutDataset, load_dataset
+from stft import StFT, get_grid, TrainingDataset, SnapshotDataset, LegacySnapshotDataset, RolloutDataset, load_dataset
 from stft.config import save_run_config, to_plain_config, validate_resume_config
 from stft.distributed import (
     barrier,
@@ -252,12 +252,18 @@ class Trainer:
         norm_mean = torch.tensor(train_mean, dtype=torch.float32).squeeze(0).squeeze(0)
         norm_std = torch.tensor(train_std, dtype=torch.float32).squeeze(0).squeeze(0)
         if self.use_snapshots:
-            train_dataset = SnapshotDataset(
+            train_dataset = LegacySnapshotDataset(
                 dataset.train,
                 snapshot_length=self.snapshot_length,
                 mean=norm_mean,
                 std=norm_std,
             )
+            # train_dataset = SnapshotDataset(
+            #     dataset.train,
+            #     snapshot_length=self.snapshot_length,
+            #     mean=norm_mean,
+            #     std=norm_std,
+            # )
         else:
             train_dataset = TrainingDataset(
                 dataset.train,
