@@ -25,7 +25,7 @@ legacy:
 
 dim: 512
 num_heads: 1
-lr: 1.0e-4
+lr: 1.2e-3
 max_epochs: 10000
 batchsize: 20
 cond_time: 5

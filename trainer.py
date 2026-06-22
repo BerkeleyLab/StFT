@@ -245,8 +245,8 @@ class Trainer:
         dataset = load_dataset(self.dataset_path)
         self.num_in_states = dataset.channels
         self.img_size = dataset.img_size
-        train_mean = np.mean(dataset.train, axis=(0, 1, 3, 4), keepdims=True)
-        train_std = np.std(dataset.train, axis=(0, 1, 3, 4), keepdims=True)
+        train_mean = torch.mean(dataset.train, axis=(0, 1, 3, 4), keepdims=True)
+        train_std = torch.std(dataset.train, axis=(0, 1, 3, 4), keepdims=True)
         self.train_mean = torch.tensor(train_mean, dtype=torch.float32, device=self.device)
         self.train_std = torch.tensor(train_std, dtype=torch.float32, device=self.device)
         norm_mean = torch.tensor(train_mean, dtype=torch.float32).squeeze(0).squeeze(0)

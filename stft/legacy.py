@@ -19,6 +19,6 @@ class LegacyStFTAdapter(nn.Module):
 
 
 def build_legacy_hierarrm(*args, **kwargs):
-    from SWE.sw_2d import HierARRM
+    from legacy_code.sw_2d import HierARRM
 
     return HierARRM(*args, **kwargs)
