@@ -240,34 +240,40 @@ class Trainer:
             if self._wandb_run is not None:
                 wandb.finish()
             cleanup_distributed()
+            for loader in (
+                getattr(self, "train_loader", None),
+                getattr(self, "val_loader", None),
+                getattr(self, "test_loader", None),
+            ):
+                if loader is not None:
+                    loader.dataset.close()
 
     def load_data(self):
         dataset = load_dataset(self.dataset_path)
         self.num_in_states = dataset.channels
         self.img_size = dataset.img_size
-        train_mean = np.mean(dataset.train, axis=(0, 1, 3, 4), keepdims=True)
-        train_std = np.std(dataset.train, axis=(0, 1, 3, 4), keepdims=True)
-        self.train_mean = torch.tensor(train_mean, dtype=torch.float32, device=self.device)
-        self.train_std = torch.tensor(train_std, dtype=torch.float32, device=self.device)
-        norm_mean = torch.tensor(train_mean, dtype=torch.float32).squeeze(0).squeeze(0)
-        norm_std = torch.tensor(train_std, dtype=torch.float32).squeeze(0).squeeze(0)
+
+        mean = torch.tensor(dataset.mean, dtype=torch.float32)
+        std  = torch.tensor(dataset.std,  dtype=torch.float32)
+        self.train_mean = mean.reshape(1, 1, -1, 1, 1).to(self.device)
+        self.train_std  = std.reshape(1, 1, -1, 1, 1).to(self.device)
+        norm_mean = mean.unsqueeze(-1).unsqueeze(-1)
+        norm_std  = std.unsqueeze(-1).unsqueeze(-1)
+
+        h5_path = dataset.path
         if self.use_snapshots:
             train_dataset = LegacySnapshotDataset(
-                dataset.train,
+                h5_path,
                 snapshot_length=self.snapshot_length,
+                split="train",
                 mean=norm_mean,
                 std=norm_std,
             )
-            # train_dataset = SnapshotDataset(
-            #     dataset.train,
-            #     snapshot_length=self.snapshot_length,
-            #     mean=norm_mean,
-            #     std=norm_std,
-            # )
         else:
             train_dataset = TrainingDataset(
-                dataset.train,
+                h5_path,
                 cond_time=self.cond_time,
+                split="train",
                 mean=norm_mean,
                 std=norm_std,
             )
@@ -283,11 +289,11 @@ class Trainer:
             shuffle=self.train_sampler is None,
         )
         self.test_loader = DataLoader(
-            RolloutDataset(dataset.test, mean=norm_mean, std=norm_std),
+            RolloutDataset(h5_path, split="test", mean=norm_mean, std=norm_std),
             batch_size=self.batchsize,
         )
         self.val_loader = DataLoader(
-            RolloutDataset(dataset.val, mean=norm_mean, std=norm_std),
+            RolloutDataset(h5_path, split="val", mean=norm_mean, std=norm_std),
             batch_size=self.batchsize,
         )
 

@@ -1,18 +1,18 @@
 """
-Unit tests for stft/data.py: load_dataset, TemporalDataset, get_grid,
-and TemporalDataset → StFT interface.
+Unit tests for stft/data.py: load_dataset, dataset classes, get_grid,
+and TrainingDataset → StFT interface.
 """
-
-import json
 
 import numpy as np
 import pytest
 import torch
 from torch.utils.data import DataLoader
 
+import h5py
+
 from stft import StFT
 from stft.data import (
-    Dataset5D,
+    HDF5Dataset,
     TrainingDataset,
     SnapshotDataset,
     RolloutDataset,
@@ -39,15 +39,32 @@ def make_array(seed=SEED, n=N, t=T, c=C, h=H, w=W):
     return rng.random((n, t, c, h, w)).astype(np.float32)
 
 
-def make_dataset_dir(tmp_path, with_metadata=False, channels=C, img_size=(H, W)):
-    """Write train/val/test .npy files (and optionally metadata.json) to tmp_path."""
-    for i, name in enumerate(("train", "val", "test")):
-        np.save(tmp_path / f"{name}.npy", make_array(seed=SEED + i))
-    if with_metadata:
-        (tmp_path / "metadata.json").write_text(
-            json.dumps({"channels": channels, "img_size": list(img_size)})
-        )
-    return tmp_path
+def make_hdf5(tmp_path, seed=SEED, n=N, t=T, c=C, h=H, w=W,
+              with_metadata=False, channels_attr=None, img_size_attr=None):
+    """Write a dataset.h5 file to tmp_path. Returns the path to the file."""
+    h5_path = tmp_path / "dataset.h5"
+    with h5py.File(h5_path, "w") as f:
+        arrays = {}
+        for i, name in enumerate(("train", "val", "test")):
+            arr = make_array(seed=seed + i, n=n, t=t, c=c, h=h, w=w)
+            arrays[name] = arr
+            f.create_dataset(name, data=arr, dtype=np.float32,
+                             chunks=(1, t, c, h, w))
+
+        train = arrays["train"].astype(np.float64)
+        mean = train.mean(axis=(0, 1, 3, 4))   # shape (C,)
+        std  = train.std(axis=(0, 1, 3, 4))
+
+        stats = f.create_group("stats")
+        stats.create_dataset("mean", data=mean, dtype=np.float64)
+        stats.create_dataset("std",  data=std,  dtype=np.float64)
+
+        f.attrs["channels"] = channels_attr if channels_attr is not None else c
+        f.attrs["img_size"] = img_size_attr if img_size_attr is not None else [h, w]
+        if with_metadata:
+            f.attrs["extra_key"] = "extra_value"
+
+    return h5_path
 
 
 # ---------------------------------------------------------------------------
@@ -56,64 +73,59 @@ def make_dataset_dir(tmp_path, with_metadata=False, channels=C, img_size=(H, W))
 
 
 def test_load_dataset_returns_correct_shapes(tmp_path):
-    make_dataset_dir(tmp_path)
-    ds = load_dataset(tmp_path)
+    h5_path = make_hdf5(tmp_path)
+    ds = load_dataset(h5_path)
 
-    assert isinstance(ds, Dataset5D)
+    assert isinstance(ds, HDF5Dataset)
     assert ds.channels == C
     assert ds.img_size == (H, W)
-    assert ds.train.shape == (N, T, C, H, W)
-    assert ds.val.shape == (N, T, C, H, W)
-    assert ds.test.shape == (N, T, C, H, W)
+    assert ds.shapes["train"] == (N, T, C, H, W)
+    assert ds.shapes["val"]   == (N, T, C, H, W)
+    assert ds.shapes["test"]  == (N, T, C, H, W)
+
+
+def test_load_dataset_from_directory(tmp_path):
+    make_hdf5(tmp_path)
+    ds = load_dataset(tmp_path)
+    assert isinstance(ds, HDF5Dataset)
+    assert ds.channels == C
+
+
+def test_load_dataset_missing_h5_in_dir_raises(tmp_path):
+    with pytest.raises(FileNotFoundError, match="dataset.h5"):
+        load_dataset(tmp_path)
 
 
 def test_load_dataset_missing_split_raises(tmp_path):
-    make_dataset_dir(tmp_path)
-    (tmp_path / "val.npy").unlink()
-    with pytest.raises(FileNotFoundError):
-        load_dataset(tmp_path)
+    h5_path = make_hdf5(tmp_path)
+    with h5py.File(h5_path, "a") as f:
+        del f["val"]
+    with pytest.raises(KeyError, match="val"):
+        load_dataset(h5_path)
 
 
-def test_load_dataset_wrong_ndim_raises(tmp_path):
-    make_dataset_dir(tmp_path)
-    # Overwrite train.npy with a 4D array
-    np.save(tmp_path / "train.npy", np.zeros((N, T, C, H), dtype=np.float32))
-    with pytest.raises(ValueError, match="5"):
-        load_dataset(tmp_path)
+def test_load_dataset_returns_stats(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = load_dataset(h5_path)
+    assert ds.mean.shape == (C,)
+    assert ds.std.shape  == (C,)
 
 
-def test_load_dataset_channel_mismatch_raises(tmp_path):
-    make_dataset_dir(tmp_path)
-    # Overwrite val.npy with different channel count
-    np.save(tmp_path / "val.npy", make_array(c=C + 1))
-    with pytest.raises(ValueError, match="Channel mismatch"):
-        load_dataset(tmp_path)
-
-
-def test_load_dataset_spatial_mismatch_raises(tmp_path):
-    make_dataset_dir(tmp_path)
-    np.save(tmp_path / "val.npy", make_array(h=H + 4))
-    with pytest.raises(ValueError, match="Spatial size mismatch"):
-        load_dataset(tmp_path)
+def test_load_dataset_stats_accuracy(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = load_dataset(h5_path)
+    train = make_array(seed=SEED).astype(np.float64)
+    expected_mean = train.mean(axis=(0, 1, 3, 4))
+    expected_std  = train.std(axis=(0, 1, 3, 4))
+    np.testing.assert_allclose(ds.mean, expected_mean, rtol=1e-5)
+    np.testing.assert_allclose(ds.std,  expected_std,  rtol=1e-5)
 
 
 def test_load_dataset_valid_metadata_passes(tmp_path):
-    make_dataset_dir(tmp_path, with_metadata=True)
-    ds = load_dataset(tmp_path)
+    h5_path = make_hdf5(tmp_path, with_metadata=True)
+    ds = load_dataset(h5_path)
     assert ds.channels == C
     assert ds.img_size == (H, W)
-
-
-def test_load_dataset_metadata_channel_mismatch_raises(tmp_path):
-    make_dataset_dir(tmp_path, with_metadata=True, channels=C + 1)
-    with pytest.raises(ValueError, match="metadata.json channels"):
-        load_dataset(tmp_path)
-
-
-def test_load_dataset_metadata_img_size_mismatch_raises(tmp_path):
-    make_dataset_dir(tmp_path, with_metadata=True, img_size=(H + 4, W))
-    with pytest.raises(ValueError, match="metadata.json img_size"):
-        load_dataset(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -121,42 +133,44 @@ def test_load_dataset_metadata_img_size_mismatch_raises(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_training_dataset_len():
-    data = make_array()
-    ds = TrainingDataset(data, cond_time=COND_TIME)
+def test_training_dataset_len(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = TrainingDataset(h5_path, cond_time=COND_TIME)
     assert len(ds) == N * (T - COND_TIME)
 
 
-def test_training_dataset_item_shapes():
-    data = make_array()
-    ds = TrainingDataset(data, cond_time=COND_TIME)
+def test_training_dataset_item_shapes(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = TrainingDataset(h5_path, cond_time=COND_TIME)
     x, y = ds[0]
     assert x.shape == (COND_TIME, C, H, W)
     assert y.shape == (C, H, W)
 
 
-def test_training_dataset_item_dtype():
-    data = make_array()
-    ds = TrainingDataset(data, cond_time=COND_TIME)
+def test_training_dataset_item_dtype(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = TrainingDataset(h5_path, cond_time=COND_TIME)
     x, y = ds[0]
     assert x.dtype == torch.float32
     assert y.dtype == torch.float32
 
 
-def test_training_dataset_no_normalization():
-    data = make_array()
-    ds = TrainingDataset(data, cond_time=COND_TIME)
+def test_training_dataset_no_normalization(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = TrainingDataset(h5_path, cond_time=COND_TIME)
     n, t = ds.indices[0]
     x, y = ds[0]
+    data = make_array()
     assert torch.allclose(x, torch.tensor(data[n, t : t + COND_TIME], dtype=torch.float32))
     assert torch.allclose(y, torch.tensor(data[n, t + COND_TIME], dtype=torch.float32))
 
 
-def test_training_dataset_normalization():
+def test_training_dataset_normalization(tmp_path):
+    h5_path = make_hdf5(tmp_path)
     data = make_array()
     mean = torch.full((C, 1, 1), float(data.mean()))
-    std = torch.full((C, 1, 1), float(data.std()))
-    ds = TrainingDataset(data, cond_time=COND_TIME, mean=mean, std=std)
+    std  = torch.full((C, 1, 1), float(data.std()))
+    ds = TrainingDataset(h5_path, cond_time=COND_TIME, mean=mean, std=std)
 
     n, t = ds.indices[0]
     raw_x = torch.tensor(data[n, t : t + COND_TIME], dtype=torch.float32)
@@ -166,15 +180,31 @@ def test_training_dataset_normalization():
     assert torch.allclose(y, (raw_y - mean) / std, atol=1e-6)
 
 
-def test_training_dataset_dataloader():
-    data = make_array()
-    ds = TrainingDataset(data, cond_time=COND_TIME)
+def test_training_dataset_lazy_open(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = TrainingDataset(h5_path, cond_time=COND_TIME)
+    assert ds._h5file is None
+    _ = ds[0]
+    assert ds._h5file is not None
+
+
+def test_training_dataset_dataloader(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = TrainingDataset(h5_path, cond_time=COND_TIME)
     loader = DataLoader(ds, batch_size=2)
     x_batch, y_batch = next(iter(loader))
     assert x_batch.shape == (2, COND_TIME, C, H, W)
     assert y_batch.shape == (2, C, H, W)
     assert x_batch.dtype == torch.float32
     assert y_batch.dtype == torch.float32
+
+
+def test_training_dataset_worker_safety(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = TrainingDataset(h5_path, cond_time=COND_TIME)
+    loader = DataLoader(ds, batch_size=2, num_workers=2)
+    batches = list(loader)
+    assert len(batches) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -185,57 +215,58 @@ def test_training_dataset_dataloader():
 SNAPSHOT_LEN = 5
 
 
-def test_snapshot_dataset_len():
-    data = make_array()
-    ds = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
+def test_snapshot_dataset_len(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = SnapshotDataset(h5_path, snapshot_length=SNAPSHOT_LEN)
     assert len(ds) == N * (T - SNAPSHOT_LEN + 1)
 
 
-def test_snapshot_dataset_item_shape():
-    data = make_array()
-    ds = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
+def test_snapshot_dataset_item_shape(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = SnapshotDataset(h5_path, snapshot_length=SNAPSHOT_LEN)
     snap = ds[0]
     assert snap.shape == (SNAPSHOT_LEN, C, H, W)
 
 
-def test_snapshot_dataset_item_dtype():
-    data = make_array()
-    ds = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
+def test_snapshot_dataset_item_dtype(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = SnapshotDataset(h5_path, snapshot_length=SNAPSHOT_LEN)
     assert ds[0].dtype == torch.float32
 
 
-def test_snapshot_dataset_window_lies_in_trajectory():
-    data = make_array()
-    ds = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
+def test_snapshot_dataset_window_lies_in_trajectory(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = SnapshotDataset(h5_path, snapshot_length=SNAPSHOT_LEN)
     idx = T - SNAPSHOT_LEN + 1
     snap = ds[idx]
-    # The returned window must equal some contiguous slice of trajectory 1.
+    data = make_array(seed=SEED)
     ref = torch.tensor(data[1, :SNAPSHOT_LEN], dtype=torch.float32)
     assert torch.allclose(snap, ref)
 
 
-def test_snapshot_dataset_normalization():
+def test_snapshot_dataset_normalization(tmp_path):
+    h5_path = make_hdf5(tmp_path)
     data = make_array()
     mean = torch.full((C, 1, 1), float(data.mean()))
-    std = torch.full((C, 1, 1), float(data.std()))
+    std  = torch.full((C, 1, 1), float(data.std()))
 
-    ds_raw = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
-    ds_norm = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN, mean=mean, std=std)
+    ds_raw  = SnapshotDataset(h5_path, snapshot_length=SNAPSHOT_LEN)
+    ds_norm = SnapshotDataset(h5_path, snapshot_length=SNAPSHOT_LEN, mean=mean, std=std)
 
-    raw = ds_raw[0]
+    raw  = ds_raw[0]
     norm = ds_norm[0]
     assert torch.allclose(norm, (raw - mean) / std, atol=1e-6)
 
 
-def test_snapshot_dataset_too_long_raises():
-    data = make_array()
+def test_snapshot_dataset_too_long_raises(tmp_path):
+    h5_path = make_hdf5(tmp_path)
     with pytest.raises(ValueError, match="snapshot_length"):
-        SnapshotDataset(data, snapshot_length=T + 1)
+        SnapshotDataset(h5_path, snapshot_length=T + 1)
 
 
-def test_snapshot_dataset_dataloader():
-    data = make_array()
-    ds = SnapshotDataset(data, snapshot_length=SNAPSHOT_LEN)
+def test_snapshot_dataset_dataloader(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = SnapshotDataset(h5_path, snapshot_length=SNAPSHOT_LEN)
     loader = DataLoader(ds, batch_size=2)
     batch = next(iter(loader))
     assert batch.shape == (2, SNAPSHOT_LEN, C, H, W)
@@ -247,43 +278,45 @@ def test_snapshot_dataset_dataloader():
 # ---------------------------------------------------------------------------
 
 
-def test_rollout_dataset_len():
-    data = make_array()
-    ds = RolloutDataset(data)
+def test_rollout_dataset_len(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = RolloutDataset(h5_path, split="test")
     assert len(ds) == N
 
 
-def test_rollout_dataset_item_shape():
-    data = make_array()
-    ds = RolloutDataset(data)
+def test_rollout_dataset_item_shape(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = RolloutDataset(h5_path, split="test")
     assert ds[0].shape == (T, C, H, W)
 
 
-def test_rollout_dataset_item_dtype():
-    data = make_array()
-    ds = RolloutDataset(data)
+def test_rollout_dataset_item_dtype(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = RolloutDataset(h5_path, split="test")
     assert ds[0].dtype == torch.float32
 
 
-def test_rollout_dataset_no_normalization():
-    data = make_array()
-    ds = RolloutDataset(data)
+def test_rollout_dataset_no_normalization(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = RolloutDataset(h5_path, split="test")
+    data = make_array(seed=SEED + 2)  # test split uses seed+2
     assert torch.allclose(ds[0], torch.tensor(data[0], dtype=torch.float32))
 
 
-def test_rollout_dataset_normalization():
-    data = make_array()
+def test_rollout_dataset_normalization(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    data = make_array(seed=SEED + 2)
     mean = torch.full((C, 1, 1), float(data.mean()))
-    std = torch.full((C, 1, 1), float(data.std()))
-    ds = RolloutDataset(data, mean=mean, std=std)
+    std  = torch.full((C, 1, 1), float(data.std()))
+    ds = RolloutDataset(h5_path, split="test", mean=mean, std=std)
 
     raw = torch.tensor(data[0], dtype=torch.float32)
     assert torch.allclose(ds[0], (raw - mean) / std, atol=1e-6)
 
 
-def test_rollout_dataset_dataloader():
-    data = make_array()
-    ds = RolloutDataset(data)
+def test_rollout_dataset_dataloader(tmp_path):
+    h5_path = make_hdf5(tmp_path)
+    ds = RolloutDataset(h5_path, split="test")
     loader = DataLoader(ds, batch_size=2)
     batch = next(iter(loader))
     assert batch.shape == (2, T, C, H, W)
@@ -315,7 +348,6 @@ def test_get_grid_dtype():
 # 5. TrainingDataset → StFT interface
 # ---------------------------------------------------------------------------
 
-# Match the minimal config from test_stft.py, but use H=W=16 to satisfy patch sizes.
 _COND_TIME     = 2
 _NUM_IN_STATES = 1
 _NUM_VARS      = _NUM_IN_STATES + 2
@@ -332,12 +364,13 @@ _NUM_HEADS     = 2
 _MLP_DIM       = 16
 
 
-def test_training_dataset_stft_interface():
+def test_training_dataset_stft_interface(tmp_path):
     """A DataLoader batch from TrainingDataset feeds into StFT without shape errors."""
-    data = make_array(n=4, t=10, c=_NUM_IN_STATES, h=_IMG_H, w=_IMG_W)
-    ds = TrainingDataset(data, cond_time=_COND_TIME)
+    h5_path = make_hdf5(tmp_path, n=4, t=10, c=_NUM_IN_STATES,
+                        h=_IMG_H, w=_IMG_W)
+    ds = TrainingDataset(h5_path, cond_time=_COND_TIME)
     loader = DataLoader(ds, batch_size=2)
-    x, _ = next(iter(loader))  # x: (B, cond_time, NUM_IN_STATES, H, W)
+    x, _ = next(iter(loader))
     grid = get_grid(_IMG_H, _IMG_W)
 
     torch.manual_seed(SEED)

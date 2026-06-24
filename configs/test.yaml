@@ -1,4 +1,4 @@
-dataset: /pscratch/sd/a/atrupe/StFT/data/shallow-water
+dataset: /pscratch/sd/a/atrupe/StFT/data/shallow-water/dataset.h5
 
 patch_sizes:
   - [128, 128]

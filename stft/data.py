@@ -1,93 +1,110 @@
 import json
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+import h5py
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+
 @dataclass
-class Dataset5D:
-    train: np.ndarray
-    val: np.ndarray
-    test: np.ndarray
+class HDF5Dataset:
+    path: Path
     channels: int
-    img_size: tuple[int, int]
+    img_size: tuple
+    shapes: dict
+    mean: np.ndarray
+    std: np.ndarray
+    metadata: dict = field(default_factory=dict)
 
 
-def load_dataset(dataset_dir, mmap_mode="r"):
-    dataset_dir = Path(dataset_dir)
+def load_dataset(dataset_path, mmap_mode=None):
+    dataset_path = Path(dataset_path)
 
-    splits = {}
-    for name in ("train", "val", "test"):
-        path = dataset_dir / f"{name}.npy"
-        if not path.exists():
-            raise FileNotFoundError(f"Missing {path}")
-        arr = np.load(path, mmap_mode=mmap_mode)
-        if arr.ndim != 5:
-            raise ValueError(
-                f"{name}.npy has {arr.ndim} dimensions, expected 5 (N, T, C, H, W)"
-            )
-        splits[name] = arr
+    if dataset_path.suffix != ".h5":
+        raise ValueError(f"dataset_path must point to an .h5 file, got: {dataset_path}")
+    h5_path = dataset_path
+    if not h5_path.exists():
+        raise FileNotFoundError(f"Dataset file not found: {h5_path}")
 
-    channels = splits["train"].shape[2]
-    img_size = (splits["train"].shape[3], splits["train"].shape[4])
+    with h5py.File(h5_path, "r") as f:
+        shapes = {}
+        for name in ("train", "val", "test"):
+            if name not in f:
+                raise KeyError(f"Missing split '{name}' in {h5_path}")
+            shapes[name] = tuple(f[name].shape)
 
-    for name, arr in splits.items():
-        if arr.shape[2] != channels:
-            raise ValueError(
-                f"Channel mismatch: train has {channels}, {name} has {arr.shape[2]}"
-            )
-        if (arr.shape[3], arr.shape[4]) != img_size:
-            raise ValueError(
-                f"Spatial size mismatch: train has {img_size}, "
-                f"{name} has {(arr.shape[3], arr.shape[4])}"
-            )
+        channels = int(f.attrs["channels"])
+        img_size = tuple(int(x) for x in f.attrs["img_size"])
 
-    metadata_path = dataset_dir / "metadata.json"
-    if metadata_path.exists():
-        with open(metadata_path) as f:
-            metadata = json.load(f)
-        if "channels" in metadata and metadata["channels"] != channels:
-            raise ValueError(
-                f"metadata.json channels={metadata['channels']} "
-                f"but data has {channels}"
-            )
-        if "img_size" in metadata and tuple(metadata["img_size"]) != img_size:
-            raise ValueError(
-                f"metadata.json img_size={metadata['img_size']} "
-                f"but data has {list(img_size)}"
-            )
+        mean = np.array(f["stats/mean"], dtype=np.float64)
+        std  = np.array(f["stats/std"],  dtype=np.float64)
 
-    return Dataset5D(
-        train=splits["train"],
-        val=splits["val"],
-        test=splits["test"],
+        metadata = {k: v for k, v in f.attrs.items()
+                    if k not in ("channels", "img_size")}
+
+    return HDF5Dataset(
+        path=h5_path,
         channels=channels,
         img_size=img_size,
+        shapes=shapes,
+        mean=mean,
+        std=std,
+        metadata=metadata,
     )
 
 
-class TrainingDataset(Dataset):
-    def __init__(self, data, cond_time, mean=None, std=None):
-        self.data = data
-        N, T, C, H, W = data.shape
+class _H5Dataset(Dataset):
+    """Base class with lazy h5py open pattern."""
+
+    def __init__(self):
+        self._h5file = None
+        self._h5dataset = None
+
+    def _open_h5(self, split):
+        self._h5file = h5py.File(self.hdf5_path, "r", libver='latest')
+        self._h5dataset = self._h5file[split]
+
+    def _ensure_open(self):
+        if self._h5file is None:
+            self._open_h5(self.split)
+
+    def close(self):
+        if self._h5file is not None:
+            self._h5file.close()
+            self._h5file = None
+            self._h5dataset = None
+
+    def __del__(self):
+        self.close()
+
+
+class TrainingDataset(_H5Dataset):
+    def __init__(self, hdf5_path, cond_time, split="train", mean=None, std=None):
+        super().__init__()
+        self.hdf5_path = Path(hdf5_path)
+        self.split = split
         self.cond_time = cond_time
         self.mean = mean
         self.std = std
+
+        with h5py.File(self.hdf5_path, "r") as f:
+            N, T = f[split].shape[:2]
         self.indices = [(n, t) for n in range(N) for t in range(T - cond_time)]
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
+        self._ensure_open()
         n, t = self.indices[idx]
         x = torch.tensor(
-            np.array(self.data[n, t : t + self.cond_time]), dtype=torch.float32
+            np.array(self._h5dataset[n, t : t + self.cond_time]), dtype=torch.float32
         )
         y = torch.tensor(
-            np.array(self.data[n, t + self.cond_time]), dtype=torch.float32
+            np.array(self._h5dataset[n, t + self.cond_time]), dtype=torch.float32
         )
         if self.mean is not None:
             x = (x - self.mean) / self.std
@@ -95,30 +112,35 @@ class TrainingDataset(Dataset):
         return x, y
 
 
-class SnapshotDataset(Dataset):
-    def __init__(self, data, snapshot_length, mean=None, std=None):
-        self.data = data
-        self.N, self.T, *_ = data.shape
-        if snapshot_length > self.T:
-            raise ValueError(
-                f"snapshot_length={snapshot_length} exceeds trajectory length T={self.T}"
-            )
+class SnapshotDataset(_H5Dataset):
+    def __init__(self, hdf5_path, snapshot_length, split="train", mean=None, std=None):
+        super().__init__()
+        self.hdf5_path = Path(hdf5_path)
+        self.split = split
         self.snapshot_length = snapshot_length
         self.mean = mean
         self.std = std
+
+        with h5py.File(self.hdf5_path, "r") as f:
+            N, T = f[split].shape[:2]
+        if snapshot_length > T:
+            raise ValueError(
+                f"snapshot_length={snapshot_length} exceeds trajectory length T={T}"
+            )
         self.indices = [
             (n, start)
-            for n in range(self.N)
-            for start in range(self.T - snapshot_length + 1)
+            for n in range(N)
+            for start in range(T - snapshot_length + 1)
         ]
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
+        self._ensure_open()
         n, start = self.indices[idx]
         snap = torch.tensor(
-            np.array(self.data[n, start : start + self.snapshot_length]),
+            np.array(self._h5dataset[n, start : start + self.snapshot_length]),
             dtype=torch.float32,
         )
         if self.mean is not None:
@@ -126,25 +148,30 @@ class SnapshotDataset(Dataset):
         return snap
 
 
-class LegacySnapshotDataset(Dataset):
-    def __init__(self, data, snapshot_length, mean=None, std=None):
-        self.data = data
-        self.N, self.T, *_ = data.shape
-        if snapshot_length > self.T:
-            raise ValueError(
-                f"snapshot_length={snapshot_length} exceeds trajectory length T={self.T}"
-            )
+class LegacySnapshotDataset(_H5Dataset):
+    def __init__(self, hdf5_path, snapshot_length, split="train", mean=None, std=None):
+        super().__init__()
+        self.hdf5_path = Path(hdf5_path)
+        self.split = split
         self.snapshot_length = snapshot_length
         self.mean = mean
         self.std = std
 
+        with h5py.File(self.hdf5_path, "r") as f:
+            self.N, self.T = f[split].shape[:2]
+        if snapshot_length > self.T:
+            raise ValueError(
+                f"snapshot_length={snapshot_length} exceeds trajectory length T={self.T}"
+            )
+
     def __len__(self):
         return self.N
 
     def __getitem__(self, idx):
+        self._ensure_open()
         start = random.randint(0, self.T - self.snapshot_length)
         snap = torch.tensor(
-            np.array(self.data[idx, start : start + self.snapshot_length]),
+            np.array(self._h5dataset[idx, start : start + self.snapshot_length]),
             dtype=torch.float32,
         )
         if self.mean is not None:
@@ -152,18 +179,23 @@ class LegacySnapshotDataset(Dataset):
         return snap
 
 
-class RolloutDataset(Dataset):
-    def __init__(self, data, mean=None, std=None):
-        self.data = data
-        self.N = data.shape[0]
+class RolloutDataset(_H5Dataset):
+    def __init__(self, hdf5_path, split, mean=None, std=None):
+        super().__init__()
+        self.hdf5_path = Path(hdf5_path)
+        self.split = split
         self.mean = mean
         self.std = std
+
+        with h5py.File(self.hdf5_path, "r") as f:
+            self.N = f[split].shape[0]
 
     def __len__(self):
         return self.N
 
     def __getitem__(self, idx):
-        x = torch.tensor(np.array(self.data[idx]), dtype=torch.float32)
+        self._ensure_open()
+        x = torch.tensor(np.array(self._h5dataset[idx]), dtype=torch.float32)
         if self.mean is not None:
             x = (x - self.mean) / self.std
         return x

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "stft"
 version = "0.1.0"
 requires-python = ">=3.9"
-dependencies = ["torch", "einops", "numpy", "hydra-core"]
+dependencies = ["torch", "einops", "numpy", "hydra-core", "h5py"]
 
 [tool.setuptools.packages.find]
 include = ["stft*"]
