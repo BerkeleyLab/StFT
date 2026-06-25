@@ -6,16 +6,16 @@
 #SBATCH -q regular
 #SBATCH -t 08:00:00
 #SBATCH -N 4
-#SBATCH --signal=USR1@360
+
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=32
 #SBATCH --image=nersc/pytorch:25.06.01
 #SBATCH --module=gpu,nccl-plugin
-#SBATCH -o /pscratch/sd/a/atrupe/StFT/slurm/stft-ddp-%j.out
-#SBATCH -e /pscratch/sd/a/atrupe/StFT/slurm/stft-ddp-%j.err
+#SBATCH -o /pscratch/sd/m/mcho4/StFT-data-parellel-new/slurm/stft-ddp-%j.out
+#SBATCH -e /pscratch/sd/m/mcho4/StFT-data-parellel-new/slurm/stft-ddp-%j.err
 #SBATCH --mail-type=END,FAIL,REQUEUE
-#SBATCH --mail-user=adamrupe@lbl.gov
+#SBATCH --mail-user=
 
 export OMP_NUM_THREADS=8 
 export MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)"
