@@ -25,5 +25,5 @@ export MASTER_PORT="${MASTER_PORT:-$((10000 + SLURM_JOB_ID % 50000))}"
 
 srun --cpu-bind=cores shifter bash -c \
     'unset NCCL_CROSS_NIC; exec python "$@"' bash \
-    /pscratch/sd/a/atrupe/StFT/train.py --config-name scaling \
+    /pscratch/sd/m/mcho4/StFT-data-parellel-new/train.py --config-name scaling \
     save_path=/pscratch/sd/m/mcho4/StFT-data-parellel-new/experiments/scaling/nnodes-4
