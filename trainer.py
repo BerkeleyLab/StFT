@@ -229,8 +229,8 @@ class Trainer:
                         ],
                         **comp_metrics,
                     })
-                self.model.eval()
                 if epoch % self.validate_every_n == 0:
+                    self.model.eval()
                     if self.is_main:
                         self.evaluate_and_log(model_metrics)
                     barrier(self.distributed)
@@ -262,7 +262,7 @@ class Trainer:
 
         h5_path = dataset.path
         if self.use_snapshots:
-            train_dataset = LegacySnapshotDataset(
+            train_dataset = SnapshotDataset(
                 h5_path,
                 snapshot_length=self.snapshot_length,
                 split="train",
