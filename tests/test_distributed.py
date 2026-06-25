@@ -43,7 +43,9 @@ def test_torchrun_launch_detected_with_single_process(monkeypatch):
 def test_slurm_direct_environment_normalizes_rank_vars(monkeypatch):
     monkeypatch.setenv("SLURM_PROCID", "3")
     monkeypatch.setenv("SLURM_NTASKS", "8")
-    monkeypatch.setenv("SLURM_LOCALID", "1")
+    monkeypatch.setenv("SLURM_LOCALID", "5")
+    monkeypatch.setattr(dist_utils.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(dist_utils.torch.cuda, "device_count", lambda: 4)
 
     assert dist_utils.distributed_launch_detected()
     assert "RANK" not in os.environ

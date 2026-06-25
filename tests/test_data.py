@@ -84,16 +84,16 @@ def test_load_dataset_returns_correct_shapes(tmp_path):
     assert ds.shapes["test"]  == (N, T, C, H, W)
 
 
-def test_load_dataset_from_directory(tmp_path):
+def test_load_dataset_directory_path_raises(tmp_path):
     make_hdf5(tmp_path)
-    ds = load_dataset(tmp_path)
-    assert isinstance(ds, HDF5Dataset)
-    assert ds.channels == C
-
-
-def test_load_dataset_missing_h5_in_dir_raises(tmp_path):
-    with pytest.raises(FileNotFoundError, match="dataset.h5"):
+    with pytest.raises(ValueError, match=r"\.h5 file"):
         load_dataset(tmp_path)
+
+
+def test_load_dataset_missing_h5_file_raises(tmp_path):
+    h5_path = tmp_path / "missing.h5"
+    with pytest.raises(FileNotFoundError, match="missing.h5"):
+        load_dataset(h5_path)
 
 
 def test_load_dataset_missing_split_raises(tmp_path):

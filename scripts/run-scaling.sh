@@ -3,8 +3,8 @@
 #SBATCH -A m5031_g
 #SBATCH -J stft-4
 #SBATCH -C gpu
-#SBATCH -q debug
-#SBATCH -t 0:30:00
+#SBATCH -q regular
+#SBATCH -t 08:00:00
 #SBATCH -N 4
 #SBATCH --signal=USR1@360
 #SBATCH --ntasks-per-node=4
@@ -26,4 +26,4 @@ export MASTER_PORT="${MASTER_PORT:-$((10000 + SLURM_JOB_ID % 50000))}"
 srun --cpu-bind=cores shifter bash -c \
     'unset NCCL_CROSS_NIC; exec python "$@"' bash \
     /pscratch/sd/a/atrupe/StFT/train.py --config-name scaling \
-    save_path=/pscratch/sd/a/atrupe/StFT/experiments/scaling/nnodes-4
+    save_path=/pscratch/sd/m/mcho4/StFT-data-parellel-new/experiments/scaling/nnodes-4
