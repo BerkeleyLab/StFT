@@ -199,6 +199,7 @@ class Trainer:
                 )
                 self._save_wandb_run_metadata()
                 self.record_launch_metadata()
+            t0 = time.time()
             for epoch in range(self.start_epoch, self.max_epochs):
                 self.epoch = epoch
                 self.model.train()
@@ -236,6 +237,12 @@ class Trainer:
                     barrier(self.distributed)
                 if epoch % self.save_every_n == 0:
                     self.save_checkpoint()
+            elapsed = time.time() - t0
+            max_elapsed = reduce_max(
+                torch.tensor(elapsed, dtype=torch.float64, device=self.device),
+                self.distributed,
+            )
+            self.train_time += max_elapsed / (60 * 60)
         finally:
             if self._wandb_run is not None:
                 wandb.finish()
@@ -393,7 +400,6 @@ class Trainer:
             if self._sync_stop_requested():
                 break
         elapsed = time.time() - t0
-        self.train_time += elapsed / (60 * 60)
         local_n = torch.tensor(self._epoch_num_examples, dtype=torch.float64, device=self.device)
         global_n = reduce_sum(local_n, self.distributed).clamp_min(1)
         global_l2 = reduce_sum(self._epoch_l2.to(torch.float64), self.distributed)
