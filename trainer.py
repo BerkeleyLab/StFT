@@ -285,7 +285,7 @@ class Trainer:
                 std=norm_std,
             )
         self.train_sampler = (
-            DistributedSampler(train_dataset, shuffle=True)
+            DistributedSampler(train_dataset, shuffle=True, drop_last=True)
             if self.distributed
             else None
         )
@@ -294,6 +294,7 @@ class Trainer:
             batch_size=self.batchsize,
             sampler=self.train_sampler,
             shuffle=self.train_sampler is None,
+            drop_last=True,
         )
         self.test_loader = DataLoader(
             RolloutDataset(h5_path, split="test", mean=norm_mean, std=norm_std),

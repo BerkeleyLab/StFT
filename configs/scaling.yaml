@@ -1,4 +1,4 @@
-dataset: /pscratch/sd/m/mcho4/StFT-data-parellel-new/data/shallow-water/dataset.h5
+dataset: /pscratch/sd/m/mcho4/StFT-data-parellel-new/data/shallow-water/extended_dataset.h5
 
 patch_sizes:
   - [128, 128]
