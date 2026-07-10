@@ -23,7 +23,7 @@ cond_time: 5
 lift_channel: 64
 act: gelu
 
-save_path: /pscratch/sd/m/mcho4/StFT-data-parellel-new/experiments/scaling/
+save_path: /pscratch/sd/m/mcho4/StFT-data-parellel-new/experiments/strong-scaling/
 save_every_n: 5
 validate_every_n: 10
 

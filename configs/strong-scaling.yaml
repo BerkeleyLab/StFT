@@ -1,4 +1,4 @@
-dataset: /pscratch/sd/a/atrupe/StFT/data/shallow-water/dataset.h5
+dataset: /pscratch/sd/m/mcho4/StFT-data-parellel-new/data/shallow-water/dataset.h5
 
 patch_sizes:
   - [128, 128]
@@ -18,12 +18,12 @@ dim: 8
 num_heads: 1
 lr: 1.0e-4
 max_epochs: 1
-batchsize: 64
+batchsize: 16
 cond_time: 5
 lift_channel: 8
 act: gelu
 
-save_path: /pscratch/sd/a/atrupe/StFT/experiments/test
+save_path: /pscratch/sd/m/mcho4/StFT-data-parellel-new/experiments/strong-scaling/
 save_every_n: 5
 validate_every_n: 10
 
