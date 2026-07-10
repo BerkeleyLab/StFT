@@ -22,6 +22,7 @@ from stft.distributed import (
     unwrap_model,
 )
 from stft.launch_metadata import write_launch_metadata
+from stft.timing_utils import Timer
 from stft.legacy import LegacyStFTAdapter, build_legacy_hierarrm
 
 class LpLoss(object):
@@ -116,6 +117,7 @@ class Trainer:
         barrier(self.distributed)
         self.load_data()
         self.build_model()
+        self.timer = Timer(self.device)
         latest = self.save_path / "latest.pt"
         if latest.exists():
             self.load_checkpoint(latest)
@@ -440,31 +442,36 @@ class Trainer:
         x = x.to(self.device)
         y = y.to(self.device)
         B = x.shape[0]
-        preds = self.model(x, self.grid)
-        sum_residues = torch.zeros_like(
-            preds[0].reshape(B * self.num_in_states, -1),
-            dtype=torch.float32,
-        )
-        for level in range(self.num_levels):
-            cur_preds = preds[level]
-            sum_residues += cur_preds.reshape(B * self.num_in_states, -1)
-            self._epoch_l2_levels[level] += self.myloss(
-                cur_preds.reshape(B * self.num_in_states, -1),
+        with self.timer.measure("forward", cuda=True):
+            preds = self.model(x, self.grid)
+        with self.timer.measure("loss", cuda=True):
+            sum_residues = torch.zeros_like(
+                preds[0].reshape(B * self.num_in_states, -1),
+                dtype=torch.float32,
+            )
+            for level in range(self.num_levels):
+                cur_preds = preds[level]
+                sum_residues += cur_preds.reshape(B * self.num_in_states, -1)
+                self._epoch_l2_levels[level] += self.myloss(
+                    cur_preds.reshape(B * self.num_in_states, -1),
+                    y.reshape(B * self.num_in_states, -1),
+                ).detach()
+            loss = self.myloss(
+                sum_residues,
                 y.reshape(B * self.num_in_states, -1),
-            ).detach()
-        loss = self.myloss(
-            sum_residues,
-            y.reshape(B * self.num_in_states, -1),
-        )
+            )
         self.optimizer.zero_grad()
-        loss.backward()
+        with self.timer.measure("backward", cuda=True):
+            loss.backward()
         clip_grad_norm_(unwrap_model(self.model).parameters(), max_norm=10.0)
-        self.optimizer.step()
+        with self.time.measure("optimizer_step", cuda=True):
+            self.optimizer.step()
         self._epoch_l2 += loss.detach()
         self._epoch_num_examples += B * self.num_in_states
 
     def train_snapshot_batch(self, snapshot):
-        snapshot = snapshot.to(self.device)
+        with self.timer.measure("snapshot_to_gpu"):
+            snapshot = snapshot.to(self.device) 
         L = snapshot.shape[1]
         for i in range(L - self.cond_time):
             x = snapshot[:, i : i + self.cond_time]
