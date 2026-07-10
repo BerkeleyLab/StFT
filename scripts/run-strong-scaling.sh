@@ -27,4 +27,4 @@ srun --cpu-bind=cores shifter bash -c \
     'unset NCCL_CROSS_NIC; exec python "$@"' bash \
     /pscratch/sd/m/mcho4/StFT-data-parellel-new/train.py --config-name strong-scaling \
     batchsize=32 \
-    save_path=/pscratch/sd/m/mcho4/StFT-data-parellel-new/experiments/strong-scaling/nnodes-32
+    save_path=/pscratch/sd/m/mcho4/StFT-data-parellel-new/experiments/strong-scaling/nnodes-16
