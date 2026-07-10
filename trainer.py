@@ -1,7 +1,6 @@
 from pathlib import Path
 import json
 import signal
-import time
 import numpy as np
 import torch
 import wandb
@@ -201,45 +200,45 @@ class Trainer:
                 )
                 self._save_wandb_run_metadata()
                 self.record_launch_metadata()
-            t0 = time.time()
-            for epoch in range(self.start_epoch, self.max_epochs):
-                self.epoch = epoch
-                self.model.train()
-                model_metrics, comp_metrics = self.train_epoch()
-                if self.is_main:
-                    peak_allocated = comp_metrics.get("peak_gpu_memory_gb", "n/a")
-                    peak_reserved = comp_metrics.get("reserved_gpu_memory_gb", "n/a")
-                    print(
-                        f"epoch {epoch} | "
-                        f"peak allocated: {peak_allocated} GB | "
-                        f"peak reserved: {peak_reserved} GB",
-                        flush=True
-                    )
-                if self._sync_stop_requested():
-                    self.save_checkpoint()
+            with self.timer.measure("run_time"):
+                for epoch in range(self.start_epoch, self.max_epochs):
+                    self.epoch = epoch
+                    self.model.train()
+                    model_metrics, comp_metrics = self.train_epoch()
                     if self.is_main:
+                        peak_allocated = comp_metrics.get("peak_gpu_memory_gb", "n/a")
+                        peak_reserved = comp_metrics.get("reserved_gpu_memory_gb", "n/a")
                         print(
-                            f"successful exit, train time: {self.train_time} | epoch: {self.epoch}")
-                    break
-                if self.is_main:
-                    wandb.log({"epoch": epoch, **comp_metrics})
-                    self.log_local_metrics({
-                        "event": "train",
-                        "epoch": epoch,
-                        "train_l2": model_metrics["train_l2"].item(),
-                        "level_losses": [
-                            value.item() for value in model_metrics["level_losses"]
-                        ],
-                        **comp_metrics,
-                    })
-                if epoch % self.validate_every_n == 0:
-                    self.model.eval()
+                            f"epoch {epoch} | "
+                            f"peak allocated: {peak_allocated} GB | "
+                            f"peak reserved: {peak_reserved} GB",
+                            flush=True
+                        )
+                    if self._sync_stop_requested():
+                        self.save_checkpoint()
+                        if self.is_main:
+                            print(
+                                f"successful exit, train time: {self.train_time} | epoch: {self.epoch}")
+                        break
                     if self.is_main:
-                        self.evaluate_and_log(model_metrics)
-                    barrier(self.distributed)
-                if epoch % self.save_every_n == 0:
-                    self.save_checkpoint()
-            elapsed = time.time() - t0
+                        wandb.log({"epoch": epoch, **comp_metrics})
+                        self.log_local_metrics({
+                            "event": "train",
+                            "epoch": epoch,
+                            "train_l2": model_metrics["train_l2"].item(),
+                            "level_losses": [
+                                value.item() for value in model_metrics["level_losses"]
+                            ],
+                            **comp_metrics,
+                        })
+                    if epoch % self.validate_every_n == 0:
+                        self.model.eval()
+                        if self.is_main:
+                            self.evaluate_and_log(model_metrics)
+                        barrier(self.distributed)
+                    if epoch % self.save_every_n == 0:
+                        self.save_checkpoint()
+            elapsed = self.timer.flush()["timing/run_time_host_s"]
             max_elapsed = reduce_max(
                 torch.tensor(elapsed, dtype=torch.float64, device=self.device),
                 self.distributed,
@@ -390,19 +389,26 @@ class Trainer:
             self.train_sampler.set_epoch(self.epoch)
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
-        t0 = time.time()
         self._epoch_l2_levels = torch.zeros(self.num_levels, dtype=torch.float32, device=self.device)
         self._epoch_l2 = torch.zeros((), dtype=torch.float32, device=self.device)
         self._epoch_num_examples = 0
-        for batch in self.train_loader:
-            if self.use_snapshots:
-                self.train_snapshot_batch(batch)
-            else:
-                x, y = batch
-                self.train_batch(x, y)
-            if self._sync_stop_requested():
-                break
-        elapsed = time.time() - t0
+        with self.timer.measure("train_time"):
+            for batch in self.train_loader:
+                if self.use_snapshots:
+                    self.train_snapshot_batch(batch)
+                else:
+                    x, y = batch
+                    self.train_batch(x, y)
+                if self._sync_stop_requested():
+                    break
+        timing_metrics = {
+            name: reduce_max(
+                torch.tensor(value, dtype=torch.float64, device=self.device),
+                self.distributed,
+            ).item()
+            for name, value in self.timer.flush().items()
+        }
+        elapsed = timing_metrics["timing/train_time_host_s"]
         local_n = torch.tensor(self._epoch_num_examples, dtype=torch.float64, device=self.device)
         global_n = reduce_sum(local_n, self.distributed).clamp_min(1)
         global_l2 = reduce_sum(self._epoch_l2.to(torch.float64), self.distributed)
@@ -421,8 +427,8 @@ class Trainer:
             if global_examples.item() > 0 and max_elapsed.item() > 0
             else {}
         )
+        comp_metrics.update(timing_metrics)
         if self.device.type == "cuda":
-            torch.cuda.synchronize() # REMOVE AFTER TESTING
             peak_memory = torch.tensor(
                 torch.cuda.max_memory_allocated(self.device) / 1024**3,
                 dtype=torch.float64,
@@ -464,13 +470,13 @@ class Trainer:
         with self.timer.measure("backward", cuda=True):
             loss.backward()
         clip_grad_norm_(unwrap_model(self.model).parameters(), max_norm=10.0)
-        with self.time.measure("optimizer_step", cuda=True):
+        with self.timer.measure("optimizer_step", cuda=True):
             self.optimizer.step()
         self._epoch_l2 += loss.detach()
         self._epoch_num_examples += B * self.num_in_states
 
     def train_snapshot_batch(self, snapshot):
-        with self.timer.measure("snapshot_to_gpu"):
+        with self.timer.measure("snapshot_to_gpu", cuda=True):
             snapshot = snapshot.to(self.device) 
         L = snapshot.shape[1]
         for i in range(L - self.cond_time):
@@ -670,6 +676,7 @@ class Trainer:
         self.myloss = LpLoss(size_average=False)
         self.model = self._build_raw_model(dim=self.dim_test).to(self.device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+        self.timer = Timer(self.device)
         print(
             f"batch_size: {self.B} | "
             f"dim: {self.dim_test} | "
