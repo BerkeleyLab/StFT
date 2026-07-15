@@ -59,6 +59,16 @@ def test_save_run_config_rejects_immutable_resume_change(tmp_path):
         save_run_config(changed)
 
 
+def test_save_run_config_rejects_seed_change_on_resume(tmp_path):
+    run_dir = tmp_path / "experiments" / "run_2"
+    config = {**make_config(run_dir), "seed": 42}
+    save_run_config(config)
+
+    changed = {**config, "seed": 43}
+    with pytest.raises(ValueError, match="seed"):
+        save_run_config(changed)
+
+
 def test_save_run_config_warns_for_sensitive_resume_change(tmp_path, capsys):
     run_dir = tmp_path / "experiments" / "run_2"
     config = make_config(run_dir)

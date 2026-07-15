@@ -17,6 +17,7 @@ modes:
 dim: 8
 num_heads: 1
 lr: 1.0e-4
+seed: 36
 max_epochs: 1
 batchsize: 16
 cond_time: 5

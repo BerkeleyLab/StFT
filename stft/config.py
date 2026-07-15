@@ -16,6 +16,7 @@ IMMUTABLE_CONFIG_KEYS = (
     "modes",
     "dim",
     "num_heads",
+    "seed",
     "cond_time",
     "lift_channel",
     "act",

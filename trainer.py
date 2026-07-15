@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import random
 import signal
 import numpy as np
 import torch
@@ -80,6 +81,9 @@ class Trainer:
         self.cond_time = config["cond_time"]
         self.lift_channel = config["lift_channel"]
         self.act = config["act"]
+        self.seed = config.get("seed")
+        if self.seed is not None:
+            self.seed = int(self.seed)
         self.save_path = Path(config["save_path"])
         self.save_every_n = config["save_every_n"]
         self.validate_every_n = config["validate_every_n"]
@@ -96,6 +100,7 @@ class Trainer:
         self.epoch = 0
         self.start_epoch = 0
         self.train_time = 0.0
+        self.num_optimizer_steps = 0
         self._stopped = False
         self._wandb_run = None
         self.wandb_run_id = None
@@ -105,6 +110,7 @@ class Trainer:
         self.distributed = distributed_is_enabled()
         log_distributed_preflight(self.device, self.local_rank, self.rank, self.world_size)
         self.is_main = self.rank == 0
+        self._seed_everything()
         signal.signal(signal.SIGTERM, self._handle_stop_signal)
         signal.signal(signal.SIGUSR1, self._handle_stop_signal)
 
@@ -120,6 +126,16 @@ class Trainer:
         latest = self.save_path / "latest.pt"
         if latest.exists():
             self.load_checkpoint(latest)
+
+    def _seed_everything(self):
+        """Seed model initialization and data-order randomness when configured."""
+        if self.seed is None:
+            return
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
 
     def _handle_stop_signal(self, signum, frame):
         if self.is_main:
@@ -221,10 +237,15 @@ class Trainer:
                                 f"successful exit, train time: {self.train_time} | epoch: {self.epoch}")
                         break
                     if self.is_main:
-                        wandb.log({"epoch": epoch, **comp_metrics})
+                        wandb.log({
+                            "epoch": epoch,
+                            "num_optimizer_steps": self.num_optimizer_steps,
+                            **comp_metrics,
+                        })
                         self.log_local_metrics({
                             "event": "train",
                             "epoch": epoch,
+                            "num_optimizer_steps": self.num_optimizer_steps,
                             "train_l2": model_metrics["train_l2"].item(),
                             "level_losses": [
                                 value.item() for value in model_metrics["level_losses"]
@@ -286,7 +307,12 @@ class Trainer:
                 std=norm_std,
             )
         self.train_sampler = (
-            DistributedSampler(train_dataset, shuffle=True, drop_last=True)
+            DistributedSampler(
+                train_dataset,
+                shuffle=True,
+                seed=self.seed if self.seed is not None else 0,
+                drop_last=True,
+            )
             if self.distributed
             else None
         )
@@ -468,10 +494,14 @@ class Trainer:
             )
         self.optimizer.zero_grad()
         with self.timer.measure("backward", cuda=True):
-            loss.backward()
+            # DDP averages gradients across ranks.  Normalizing the local sum
+            # makes that average equal to the global mean, independent of the
+            # local batch size or world size.
+            (loss / (B * self.num_in_states)).backward()
         clip_grad_norm_(unwrap_model(self.model).parameters(), max_norm=10.0)
         with self.timer.measure("optimizer_step", cuda=True):
             self.optimizer.step()
+            self.num_optimizer_steps += 1
         self._epoch_l2 += loss.detach()
         self._epoch_num_examples += B * self.num_in_states
 
@@ -557,6 +587,7 @@ class Trainer:
                 "optimizer_state": self.optimizer.state_dict(),
                 "epoch": self.epoch,
                 "train_time": self.train_time,
+                "num_optimizer_steps": self.num_optimizer_steps,
                 "best_val": self.best_val.item(),
                 "best_test": self.best_test.item(),
                 "best_test_under_val": self.best_test_under_val.item(),
@@ -580,6 +611,7 @@ class Trainer:
         unwrap_model(self.model).load_state_dict(checkpoint["model_state"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state"])
         self.train_time = checkpoint["train_time"]
+        self.num_optimizer_steps = checkpoint.get("num_optimizer_steps", 0)
         self.best_val = torch.tensor(checkpoint["best_val"], dtype=torch.float32, device=self.device)
         self.best_test = torch.tensor(checkpoint["best_test"], dtype=torch.float32, device=self.device)
         self.best_test_under_val = torch.tensor(
