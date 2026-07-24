@@ -233,7 +233,7 @@ def train_model(config):
 
 if __name__ == "__main__":
     config = {
-        "dataset": "/path/to/my/data/plasma.pkl",
+        "dataset": os.path.abspath("plasma_(1).pkl"),
         "many_params": (
             ((128, 128), (64, 64)),
             ((1, 1), (1, 1)),
@@ -250,12 +250,11 @@ if __name__ == "__main__":
         "lift_channel": 64,
         "act": "gelu",
     }
-    # save_path = "/path/to/my/results"
+    save_path = os.path.abspath("ray_results")
     trainable_with_cpu_gpu = tune.with_resources(train_model, {"cpu": 16, "gpu": 1})
     tuner = tune.Tuner(
         trainable_with_cpu_gpu,
         param_space=config,
-        run_config=RunConfig(name="train_p"),
-	storage_path = save_path, 
+        run_config=RunConfig(name="train_p", storage_path=save_path),
     )
     tuner.fit()

@@ -60,3 +60,18 @@ def get_grid(H, W):
     grid = torch.tensor(np.concatenate((x[None], y[None]), axis=0), dtype=torch.float32)
 
     return grid
+
+
+def get_grid_from_coords(coords_h, coords_w):
+    """Grid channels from explicit (possibly non-uniform) axis coordinates.
+
+    Same layout as get_grid, but the true physical coordinates of each kept
+    grid line are used — this is how the irregular geometry reaches the model.
+    """
+    x, y = np.meshgrid(np.asarray(coords_h), np.asarray(coords_w))
+    x = x.T
+    y = y.T
+
+    grid = torch.tensor(np.concatenate((x[None], y[None]), axis=0), dtype=torch.float32)
+
+    return grid

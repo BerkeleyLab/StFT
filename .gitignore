@@ -4,3 +4,7 @@ build/
 *.egg-info/
 __pycache__/
 *.pyc
+plasma_**
+run_**
+./.gitignore
+submit_**

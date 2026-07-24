@@ -9,10 +9,12 @@ description = "Spatial-temporal Fourier Transformer"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-  "numpy",
+  "numpy<2",
   "torch",
   "einops",
-  "ray[train]",
+  "ray[train]==2.9.*",
+  "setuptools<66",  # Ray 2.9 imports pkg_resources._vendor.packaging, removed in newer setuptools
+  "pyarrow<14",     # Ray 2.9 uses pa.PyExtensionType, removed in pyarrow 14+
 ]
 
 [tool.setuptools]
